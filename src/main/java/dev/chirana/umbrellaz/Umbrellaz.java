@@ -12,10 +12,14 @@ import dev.chirana.umbrellaz.infra.db.MigrationRunner;
 import dev.chirana.umbrellaz.infra.db.sqlite.SQLiteDatabase;
 import dev.chirana.umbrellaz.player.PlayerRepository;
 import dev.chirana.umbrellaz.player.PlayerService;
+import dev.chirana.umbrellaz.player.PlayerStatusCommand;
+import dev.chirana.umbrellaz.player.HealthLockEvents;
+import dev.chirana.umbrellaz.player.HealthLockService;
 import dev.chirana.umbrellaz.whitelist.WhitelistCache;
 import dev.chirana.umbrellaz.whitelist.WhitelistCommand;
 import dev.chirana.umbrellaz.whitelist.WhitelistRepository;
 import dev.chirana.umbrellaz.whitelist.WhitelistService;
+import dev.chirana.umbrellaz.teleport.TeleportCommand;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -59,7 +63,15 @@ public final class Umbrellaz implements ModInitializer {
         });
 
         WhitelistCommand whitelistCommand = new WhitelistCommand(whitelistService, authorizationService, authService, config);
-        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> whitelistCommand.register(dispatcher));
+        TeleportCommand teleportCommand = new TeleportCommand(authorizationService);
+        HealthLockService healthLockService = new HealthLockService();
+        HealthLockEvents.register(healthLockService);
+        PlayerStatusCommand playerStatusCommand = new PlayerStatusCommand(authorizationService, healthLockService);
+        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+            whitelistCommand.register(dispatcher);
+            teleportCommand.register(dispatcher);
+            playerStatusCommand.register(dispatcher);
+        });
         AuthEvents.register(authService, authorizationService, config);
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> databaseExecutor.close());
         LOGGER.info("Umbrellaz initialized");

@@ -5,7 +5,8 @@
   "mixins": [
     "ServerPlayNetworkHandlerMixin",
     "ItemEntityMixin",
-    "ServerCommandSourceMixin"
+    "ServerCommandSourceMixin",
+    "LivingEntityMixin"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -1,5 +1,11 @@
 .gradle
 build/
+!build/
+build/*
+!build/libs/
+build/libs/*
+!build/libs/umbrellaz-*.jar
+build/libs/umbrellaz-*-sources.jar
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/
