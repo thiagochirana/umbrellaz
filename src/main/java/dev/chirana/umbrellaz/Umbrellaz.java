@@ -20,6 +20,7 @@ import dev.chirana.umbrellaz.whitelist.WhitelistCommand;
 import dev.chirana.umbrellaz.whitelist.WhitelistRepository;
 import dev.chirana.umbrellaz.whitelist.WhitelistService;
 import dev.chirana.umbrellaz.teleport.TeleportCommand;
+import dev.chirana.umbrellaz.world.WorldTimeCommand;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -64,12 +65,14 @@ public final class Umbrellaz implements ModInitializer {
 
         WhitelistCommand whitelistCommand = new WhitelistCommand(whitelistService, authorizationService, authService, config);
         TeleportCommand teleportCommand = new TeleportCommand(authorizationService);
+        WorldTimeCommand worldTimeCommand = new WorldTimeCommand(authorizationService);
         HealthLockService healthLockService = new HealthLockService();
         HealthLockEvents.register(healthLockService);
         PlayerStatusCommand playerStatusCommand = new PlayerStatusCommand(authorizationService, healthLockService);
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             whitelistCommand.register(dispatcher);
             teleportCommand.register(dispatcher);
+            worldTimeCommand.register(dispatcher);
             playerStatusCommand.register(dispatcher);
         });
         AuthEvents.register(authService, authorizationService, config);

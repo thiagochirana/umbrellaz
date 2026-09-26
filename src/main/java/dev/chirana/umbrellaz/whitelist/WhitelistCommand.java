@@ -62,6 +62,7 @@ public final class WhitelistCommand {
         source.sendFeedback(() -> helpLine("/uz whitelist", "Gerencia a whitelist do servidor"), false);
         source.sendFeedback(() -> helpLine("/uz wl", "Atalho para /uz whitelist"), false);
         source.sendFeedback(() -> helpLine("/uz tp", "Teleporta jogadores · administradores"), false);
+        source.sendFeedback(() -> helpLine("/uz time", "Altera o tempo dos mundos · administradores"), false);
         source.sendFeedback(() -> helpLine("/uz hp  /uz xp", "Consulta e altera HP ou XP · administradores"), false);
         source.sendFeedback(() -> helpLine("/uz kill", "Mata jogadores · administradores"), false);
         source.sendFeedback(() -> Text.empty()
