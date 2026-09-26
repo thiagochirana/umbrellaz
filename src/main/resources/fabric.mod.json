@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "umbrellaz",
+  "version": "${version}",
+  "name": "Umbrellaz",
+  "description": "Server-side authorization and whitelist management for Fabric.",
+  "authors": ["Chirana"],
+  "contact": {},
+  "license": "All-Rights-Reserved",
+  "environment": "server",
+  "entrypoints": {
+    "main": ["dev.chirana.umbrellaz.Umbrellaz"]
+  },
+  "mixins": ["umbrellaz.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.16.14",
+    "minecraft": "1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "package": "dev.chirana.umbrellaz.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "ServerPlayNetworkHandlerMixin",
+    "ItemEntityMixin",
+    "ServerCommandSourceMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
