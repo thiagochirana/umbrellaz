@@ -831,6 +831,32 @@ Tests should not require a Minecraft server unless testing Fabric integration sp
 
 ---
 
+# GitHub Releases
+
+The local `release` task builds and publishes the main mod jar to GitHub:
+
+```bash
+gh auth login
+./gradlew release
+```
+
+Alternatively, authenticate the GitHub CLI with `GH_TOKEN`. The task uses the
+Gradle project version and the normal `jar` archive, so it uploads only
+`build/libs/umbrellaz-${version}.jar`; the sources jar is not published.
+
+The default release tag is `v${version}`. Override it when needed with
+`./gradlew -PreleaseTag=v1.2.3 release`. If the tag does not exist, `gh release
+create` creates it automatically. GitHub CLI refuses an existing release
+instead of overwriting it, so rerunning a successful release is expected to
+fail safely; choose a new tag for another release.
+
+Publishing is an external side effect and the task is deliberately never
+up-to-date. It validates the artifact and GitHub CLI before publishing. The
+task does not store or print credentials; it uses the GitHub CLI's normal
+authentication.
+
+---
+
 # Comments
 
 Do not add comments to source code unless explicitly requested.

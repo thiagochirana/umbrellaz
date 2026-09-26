@@ -4,6 +4,9 @@ import dev.chirana.umbrellaz.auth.AuthEvents;
 import dev.chirana.umbrellaz.auth.AuthService;
 import dev.chirana.umbrellaz.authorization.AdministratorRepository;
 import dev.chirana.umbrellaz.authorization.AuthorizationService;
+import dev.chirana.umbrellaz.blocks.BlocksCommand;
+import dev.chirana.umbrellaz.blocks.BlocksEvents;
+import dev.chirana.umbrellaz.blocks.BlocksService;
 import dev.chirana.umbrellaz.config.ConfigLoader;
 import dev.chirana.umbrellaz.config.UmbrellazConfig;
 import dev.chirana.umbrellaz.infra.db.DatabaseExecutor;
@@ -66,6 +69,9 @@ public final class Umbrellaz implements ModInitializer {
         WhitelistCommand whitelistCommand = new WhitelistCommand(whitelistService, authorizationService, authService, config);
         TeleportCommand teleportCommand = new TeleportCommand(authorizationService);
         WorldTimeCommand worldTimeCommand = new WorldTimeCommand(authorizationService);
+        BlocksService blocksService = new BlocksService();
+        BlocksCommand blocksCommand = new BlocksCommand(blocksService, authorizationService);
+        BlocksEvents.register(blocksService);
         HealthLockService healthLockService = new HealthLockService();
         HealthLockEvents.register(healthLockService);
         PlayerStatusCommand playerStatusCommand = new PlayerStatusCommand(authorizationService, healthLockService);
@@ -73,6 +79,7 @@ public final class Umbrellaz implements ModInitializer {
             whitelistCommand.register(dispatcher);
             teleportCommand.register(dispatcher);
             worldTimeCommand.register(dispatcher);
+            blocksCommand.register(dispatcher);
             playerStatusCommand.register(dispatcher);
         });
         AuthEvents.register(authService, authorizationService, config);

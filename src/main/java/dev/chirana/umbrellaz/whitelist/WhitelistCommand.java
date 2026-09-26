@@ -65,6 +65,7 @@ public final class WhitelistCommand {
         source.sendFeedback(() -> helpLine("/uz time", "Altera o tempo dos mundos · administradores"), false);
         source.sendFeedback(() -> helpLine("/uz hp  /uz xp", "Consulta e altera HP ou XP · administradores"), false);
         source.sendFeedback(() -> helpLine("/uz kill", "Mata jogadores · administradores"), false);
+        source.sendFeedback(() -> helpLine("/uz blocks", "Automação de árvores e minérios · administradores"), false);
         source.sendFeedback(() -> Text.empty()
                 .append(Text.literal("  Dica  ").formatted(Formatting.DARK_GRAY, Formatting.BOLD))
                 .append(Text.literal("Use ").formatted(Formatting.GRAY))
