@@ -5,6 +5,9 @@ import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import dev.chirana.umbrellaz.authorization.AuthorizationService;
+import dev.chirana.umbrellaz.authorization.CommandAuthorization;
+import dev.chirana.umbrellaz.player.OnlinePlayerResolver;
+import dev.chirana.umbrellaz.player.OnlinePlayerSuggestions;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -15,9 +18,22 @@ import net.minecraft.server.level.ServerPlayer;
 
 public final class TeleportCommand {
     private final AuthorizationService authorizationService;
+    private final OnlinePlayerResolver playerResolver;
+    private final OnlinePlayerSuggestions playerSuggestions;
 
     public TeleportCommand(AuthorizationService authorizationService) {
+        this(authorizationService, new OnlinePlayerResolver(), new OnlinePlayerSuggestions());
+    }
+
+    public TeleportCommand(AuthorizationService authorizationService, OnlinePlayerResolver playerResolver) {
+        this(authorizationService, playerResolver, new OnlinePlayerSuggestions());
+    }
+
+    public TeleportCommand(AuthorizationService authorizationService, OnlinePlayerResolver playerResolver,
+                           OnlinePlayerSuggestions playerSuggestions) {
         this.authorizationService = authorizationService;
+        this.playerResolver = playerResolver;
+        this.playerSuggestions = playerSuggestions;
     }
 
     public void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -34,9 +50,11 @@ public final class TeleportCommand {
                 .executes(context -> help(context.getSource()))
                 .then(Commands.literal("help").executes(context -> help(context.getSource())))
                 .then(Commands.argument("player", StringArgumentType.word())
+                        .suggests(playerSuggestions)
                         .executes(context -> teleportSelf(
                                 context.getSource(), StringArgumentType.getString(context, "player")))
                         .then(Commands.argument("target", StringArgumentType.word())
+                                .suggests(playerSuggestions)
                                 .executes(context -> teleportPlayerToPlayer(
                                         context.getSource(),
                                         StringArgumentType.getString(context, "player"),
@@ -62,11 +80,12 @@ public final class TeleportCommand {
             source.sendFailure(error("Este formato precisa ser executado por um jogador."));
             return 0;
         }
-        ServerPlayer destination = findPlayer(source.getServer(), destinationName);
-        if (destination == null) {
-            unknownPlayer(source, destinationName);
+        var destinationResolution = findPlayer(source.getServer(), destinationName);
+        if (destinationResolution.status() != dev.chirana.umbrellaz.player.OnlinePlayerResolution.Status.FOUND) {
+            reportResolution(source, destinationName, destinationResolution.status());
             return 0;
         }
+        ServerPlayer destination = destinationResolution.player();
         move(executor, destination);
         source.sendSuccess(() -> Component.empty()
                 .append(successPrefix())
@@ -81,16 +100,18 @@ public final class TeleportCommand {
             deny(source);
             return 0;
         }
-        ServerPlayer player = findPlayer(source.getServer(), playerName);
-        ServerPlayer target = findPlayer(source.getServer(), targetName);
-        if (player == null) {
-            unknownPlayer(source, playerName);
+        var playerResolution = findPlayer(source.getServer(), playerName);
+        if (playerResolution.status() != dev.chirana.umbrellaz.player.OnlinePlayerResolution.Status.FOUND) {
+            reportResolution(source, playerName, playerResolution.status());
             return 0;
         }
-        if (target == null) {
-            unknownPlayer(source, targetName);
+        var targetResolution = findPlayer(source.getServer(), targetName);
+        if (targetResolution.status() != dev.chirana.umbrellaz.player.OnlinePlayerResolution.Status.FOUND) {
+            reportResolution(source, targetName, targetResolution.status());
             return 0;
         }
+        ServerPlayer player = playerResolution.player();
+        ServerPlayer target = targetResolution.player();
         move(player, target);
         source.sendSuccess(() -> Component.empty()
                 .append(successPrefix())
@@ -106,11 +127,12 @@ public final class TeleportCommand {
             deny(source);
             return 0;
         }
-        ServerPlayer player = findPlayer(source.getServer(), playerName);
-        if (player == null) {
-            unknownPlayer(source, playerName);
+        var playerResolution = findPlayer(source.getServer(), playerName);
+        if (playerResolution.status() != dev.chirana.umbrellaz.player.OnlinePlayerResolution.Status.FOUND) {
+            reportResolution(source, playerName, playerResolution.status());
             return 0;
         }
+        ServerPlayer player = playerResolution.player();
         ServerLevel world = source.getLevel();
         if (world == null) {
             world = source.getServer().overworld();
@@ -126,13 +148,11 @@ public final class TeleportCommand {
     }
 
     private boolean authorized(CommandSourceStack source) {
-        return source.getEntity() == null
-                || source.getEntity() instanceof ServerPlayer player
-                && authorizationService.isAdministrator(player.getUUID());
+        return CommandAuthorization.isAdministrator(source, authorizationService);
     }
 
-    private ServerPlayer findPlayer(MinecraftServer server, String name) {
-        return server.getPlayerList().getPlayerByName(name);
+    private dev.chirana.umbrellaz.player.OnlinePlayerResolution findPlayer(MinecraftServer server, String name) {
+        return playerResolver.resolve(server, name);
     }
 
     private void move(ServerPlayer player, ServerPlayer target) {
@@ -143,6 +163,20 @@ public final class TeleportCommand {
         source.sendFailure(Component.empty()
                 .append(errorPrefix())
                 .append(Component.literal("Jogador online não encontrado: ").withStyle(ChatFormatting.RED))
+                .append(playerName(name)));
+    }
+
+    private void reportResolution(CommandSourceStack source, String name,
+                                  dev.chirana.umbrellaz.player.OnlinePlayerResolution.Status status) {
+        String message = switch (status) {
+            case AMBIGUOUS -> "Identificador ambíguo: ";
+            case NOT_READY -> "A resolução de aliases ainda não está pronta: ";
+            case NOT_FOUND -> "Jogador online não encontrado: ";
+            case FOUND -> "";
+        };
+        source.sendFailure(Component.empty()
+                .append(errorPrefix())
+                .append(Component.literal(message).withStyle(ChatFormatting.RED))
                 .append(playerName(name)));
     }
 

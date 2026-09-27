@@ -7,6 +7,7 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import dev.chirana.umbrellaz.authorization.AuthorizationService;
+import dev.chirana.umbrellaz.authorization.CommandAuthorization;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -16,10 +17,24 @@ import net.minecraft.server.level.ServerPlayer;
 public final class PlayerStatusCommand {
     private final AuthorizationService authorizationService;
     private final HealthLockService healthLockService;
+    private final OnlinePlayerResolver playerResolver;
+    private final OnlinePlayerSuggestions playerSuggestions;
 
     public PlayerStatusCommand(AuthorizationService authorizationService, HealthLockService healthLockService) {
+        this(authorizationService, healthLockService, new OnlinePlayerResolver(), new OnlinePlayerSuggestions());
+    }
+
+    public PlayerStatusCommand(AuthorizationService authorizationService, HealthLockService healthLockService,
+                               OnlinePlayerResolver playerResolver) {
+        this(authorizationService, healthLockService, playerResolver, new OnlinePlayerSuggestions());
+    }
+
+    public PlayerStatusCommand(AuthorizationService authorizationService, HealthLockService healthLockService,
+                               OnlinePlayerResolver playerResolver, OnlinePlayerSuggestions playerSuggestions) {
         this.authorizationService = authorizationService;
         this.healthLockService = healthLockService;
+        this.playerResolver = playerResolver;
+        this.playerSuggestions = playerSuggestions;
     }
 
     public void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -66,6 +81,7 @@ public final class PlayerStatusCommand {
 
     private RequiredArgumentBuilder<CommandSourceStack, String> healthPlayerCommand() {
         return Commands.argument("player", StringArgumentType.word())
+                .suggests(playerSuggestions)
                 .executes(context -> {
                     String name = StringArgumentType.getString(context, "player");
                     return showHealth(context.getSource(), findPlayer(context.getSource(), name), name);
@@ -109,6 +125,7 @@ public final class PlayerStatusCommand {
                 .executes(context -> killHelp(context.getSource()))
                 .then(Commands.literal("help").executes(context -> killHelp(context.getSource())))
                 .then(Commands.argument("player", StringArgumentType.word())
+                        .suggests(playerSuggestions)
                         .executes(context -> killPlayer(
                                 context.getSource(),
                                 StringArgumentType.getString(context, "player"))));
@@ -135,6 +152,7 @@ public final class PlayerStatusCommand {
 
     private RequiredArgumentBuilder<CommandSourceStack, String> experiencePlayerCommand() {
         return Commands.argument("player", StringArgumentType.word())
+                .suggests(playerSuggestions)
                 .executes(context -> {
                     String name = StringArgumentType.getString(context, "player");
                     return showExperience(context.getSource(), findPlayer(context.getSource(), name), name);
@@ -170,6 +188,16 @@ public final class PlayerStatusCommand {
         return 1;
     }
 
+    private int showHealth(CommandSourceStack source, OnlinePlayerResolution resolution, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (resolution.status() != OnlinePlayerResolution.Status.FOUND) {
+            return resolutionFailure(source, name, resolution.status());
+        }
+        return showHealth(source, resolution.player(), name);
+    }
+
     private int addHealth(CommandSourceStack source, ServerPlayer player, double amount, String name) {
         if (!authorized(source)) {
             return deny(source);
@@ -186,6 +214,16 @@ public final class PlayerStatusCommand {
                 .append(Component.literal("  HP alterado para ").withStyle(ChatFormatting.GREEN))
                 .append(healthValue(next, player.getMaxHealth())), true);
         return 1;
+    }
+
+    private int addHealth(CommandSourceStack source, OnlinePlayerResolution resolution, double amount, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (resolution.status() != OnlinePlayerResolution.Status.FOUND) {
+            return resolutionFailure(source, name, resolution.status());
+        }
+        return addHealth(source, resolution.player(), amount, name);
     }
 
     private int lockHealth(CommandSourceStack source, ServerPlayer player, String name) {
@@ -210,6 +248,16 @@ public final class PlayerStatusCommand {
         return 1;
     }
 
+    private int lockHealth(CommandSourceStack source, OnlinePlayerResolution resolution, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (resolution.status() != OnlinePlayerResolution.Status.FOUND) {
+            return resolutionFailure(source, name, resolution.status());
+        }
+        return lockHealth(source, resolution.player(), name);
+    }
+
     private int unlockHealth(CommandSourceStack source, ServerPlayer player, String name) {
         if (!authorized(source)) {
             return deny(source);
@@ -227,6 +275,16 @@ public final class PlayerStatusCommand {
                 .append(playerName(player))
                 .append(Component.literal("  HP destravado.").withStyle(ChatFormatting.GREEN)), true);
         return 1;
+    }
+
+    private int unlockHealth(CommandSourceStack source, OnlinePlayerResolution resolution, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (resolution.status() != OnlinePlayerResolution.Status.FOUND) {
+            return resolutionFailure(source, name, resolution.status());
+        }
+        return unlockHealth(source, resolution.player(), name);
     }
 
     private int removeHealth(CommandSourceStack source, ServerPlayer player, double amount, String name) {
@@ -247,6 +305,16 @@ public final class PlayerStatusCommand {
         return 1;
     }
 
+    private int removeHealth(CommandSourceStack source, OnlinePlayerResolution resolution, double amount, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (resolution.status() != OnlinePlayerResolution.Status.FOUND) {
+            return resolutionFailure(source, name, resolution.status());
+        }
+        return removeHealth(source, resolution.player(), amount, name);
+    }
+
     private int showExperience(CommandSourceStack source, ServerPlayer player, String name) {
         if (!authorized(source)) {
             return deny(source);
@@ -262,6 +330,16 @@ public final class PlayerStatusCommand {
                 .append(Component.literal(" pontos  ·  nível ").withStyle(ChatFormatting.GRAY))
                 .append(Component.literal(Integer.toString(player.experienceLevel)).withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD)), false);
         return 1;
+    }
+
+    private int showExperience(CommandSourceStack source, OnlinePlayerResolution resolution, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (resolution.status() != OnlinePlayerResolution.Status.FOUND) {
+            return resolutionFailure(source, name, resolution.status());
+        }
+        return showExperience(source, resolution.player(), name);
     }
 
     private int addExperience(CommandSourceStack source, ServerPlayer player, int amount, String name) {
@@ -282,6 +360,16 @@ public final class PlayerStatusCommand {
         return 1;
     }
 
+    private int addExperience(CommandSourceStack source, OnlinePlayerResolution resolution, int amount, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (resolution.status() != OnlinePlayerResolution.Status.FOUND) {
+            return resolutionFailure(source, name, resolution.status());
+        }
+        return addExperience(source, resolution.player(), amount, name);
+    }
+
     private int removeExperience(CommandSourceStack source, ServerPlayer player, int amount, String name) {
         if (!authorized(source)) {
             return deny(source);
@@ -300,14 +388,25 @@ public final class PlayerStatusCommand {
         return 1;
     }
 
+    private int removeExperience(CommandSourceStack source, OnlinePlayerResolution resolution, int amount, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (resolution.status() != OnlinePlayerResolution.Status.FOUND) {
+            return resolutionFailure(source, name, resolution.status());
+        }
+        return removeExperience(source, resolution.player(), amount, name);
+    }
+
     private int killPlayer(CommandSourceStack source, String name) {
         if (!authorized(source)) {
             return deny(source);
         }
-        ServerPlayer player = findPlayer(source, name);
-        if (player == null) {
-            return unknownPlayer(source, name);
+        OnlinePlayerResolution resolution = findPlayer(source, name);
+        if (resolution.status() != OnlinePlayerResolution.Status.FOUND) {
+            return resolutionFailure(source, name, resolution.status());
         }
+        ServerPlayer player = resolution.player();
         healthLockService.unlock(player.getUUID());
         player.sendSystemMessage(Component.literal("Admin matou você, seu boboca 😈")
                 .withStyle(ChatFormatting.DARK_RED, ChatFormatting.BOLD), false);
@@ -319,17 +418,16 @@ public final class PlayerStatusCommand {
         return 1;
     }
 
-    private ServerPlayer findPlayer(CommandSourceStack source, String name) {
+    private OnlinePlayerResolution findPlayer(CommandSourceStack source, String name) {
         if (name.equalsIgnoreCase("self")) {
-            return source.getPlayer();
+            ServerPlayer player = source.getPlayer();
+            return player == null ? OnlinePlayerResolution.notFound() : OnlinePlayerResolution.found(player);
         }
-        return source.getServer().getPlayerList().getPlayerByName(name);
+        return playerResolver.resolve(source.getServer(), name);
     }
 
     private boolean authorized(CommandSourceStack source) {
-        return source.getEntity() == null
-                || source.getEntity() instanceof ServerPlayer player
-                && authorizationService.isAdministrator(player.getUUID());
+        return CommandAuthorization.isAdministrator(source, authorizationService);
     }
 
     private int deny(CommandSourceStack source) {
@@ -341,6 +439,20 @@ public final class PlayerStatusCommand {
         source.sendFailure(Component.empty()
                 .append(errorPrefix())
                 .append(Component.literal("Jogador online não encontrado: ").withStyle(ChatFormatting.RED))
+                .append(playerName(name)));
+        return 0;
+    }
+
+    private int resolutionFailure(CommandSourceStack source, String name, OnlinePlayerResolution.Status status) {
+        String message = switch (status) {
+            case AMBIGUOUS -> "Identificador ambíguo: ";
+            case NOT_READY -> "A resolução de aliases ainda não está pronta: ";
+            case NOT_FOUND -> "Jogador online não encontrado: ";
+            case FOUND -> "";
+        };
+        source.sendFailure(Component.empty()
+                .append(errorPrefix())
+                .append(Component.literal(message).withStyle(ChatFormatting.RED))
                 .append(playerName(name)));
         return 0;
     }

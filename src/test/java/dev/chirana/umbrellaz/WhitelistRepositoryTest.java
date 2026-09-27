@@ -24,7 +24,7 @@ class WhitelistRepositoryTest {
         SQLiteDatabase database = migratedDatabase(directory.resolve("test.db"));
         UUID playerUuid = UUID.randomUUID();
         Instant recordedAt = Instant.parse("2026-09-26T18:30:00Z");
-        new PlayerRepository(database).save(new Player(playerUuid, "Ada", recordedAt, recordedAt));
+        new PlayerRepository(database).save(new Player(playerUuid, "Ada", recordedAt, recordedAt, null));
         WhitelistRepository repository = new WhitelistRepository(database);
 
         repository.add(playerUuid, "Console");

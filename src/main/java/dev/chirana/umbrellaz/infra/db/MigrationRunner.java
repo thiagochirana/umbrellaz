@@ -45,9 +45,7 @@ public final class MigrationRunner {
         try {
             autoCommit = connection.getAutoCommit();
             connection.setAutoCommit(false);
-            try (Statement statement = connection.createStatement()) {
-                statement.execute(migration.sql());
-            }
+            executeStatements(connection, migration.sql());
             if (!migrationTableExists(connection)) {
                 throw new IllegalStateException("Migration " + migration.migrationId()
                         + " did not create the " + MIGRATIONS_TABLE + " controller table");
@@ -68,6 +66,42 @@ public final class MigrationRunner {
                 exception.addSuppressed(rollbackException);
             }
             throw new IllegalStateException("Migration failed: " + migration.migrationId(), exception);
+        }
+    }
+
+    private void executeStatements(Connection connection, String sql) throws SQLException {
+        StringBuilder statementSql = new StringBuilder();
+        char quote = 0;
+        for (int index = 0; index < sql.length(); index++) {
+            char character = sql.charAt(index);
+            if (quote != 0) {
+                statementSql.append(character);
+                if (character == quote) {
+                    if (index + 1 < sql.length() && sql.charAt(index + 1) == quote) {
+                        statementSql.append(sql.charAt(++index));
+                    } else {
+                        quote = 0;
+                    }
+                }
+            } else if (character == '\'' || character == '"') {
+                quote = character;
+                statementSql.append(character);
+            } else if (character == ';') {
+                executeStatement(connection, statementSql);
+                statementSql.setLength(0);
+            } else {
+                statementSql.append(character);
+            }
+        }
+        executeStatement(connection, statementSql);
+    }
+
+    private void executeStatement(Connection connection, StringBuilder sql) throws SQLException {
+        if (sql.toString().isBlank()) {
+            return;
+        }
+        try (Statement statement = connection.createStatement()) {
+            statement.execute(sql.toString());
         }
     }
 

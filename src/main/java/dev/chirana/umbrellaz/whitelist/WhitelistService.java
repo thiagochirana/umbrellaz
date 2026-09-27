@@ -1,11 +1,12 @@
 package dev.chirana.umbrellaz.whitelist;
 
 import dev.chirana.umbrellaz.infra.db.DatabaseExecutor;
+import dev.chirana.umbrellaz.player.PlayerResolution;
 import dev.chirana.umbrellaz.player.Player;
 import dev.chirana.umbrellaz.player.PlayerService;
 
+import java.util.Comparator;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -43,10 +44,14 @@ public final class WhitelistService {
         return cache.contains(uuid);
     }
 
-    public CompletableFuture<Optional<UUID>> addByUsername(String username, String createdBy) {
-        return playerService.findByUsername(username).thenCompose(player -> player
-                .map(value -> add(value.uuid(), createdBy).thenApply(ignored -> Optional.of(value.uuid())))
-                .orElseGet(() -> CompletableFuture.completedFuture(Optional.empty())));
+    public CompletableFuture<PlayerResolution> addByUsername(String username, String createdBy) {
+        return playerService.findByIdentifier(username).thenCompose(resolution -> {
+            if (resolution.status() != PlayerResolution.Status.FOUND) {
+                return CompletableFuture.completedFuture(resolution);
+            }
+            return add(resolution.player().uuid(), createdBy)
+                    .thenApply(ignored -> resolution);
+        });
     }
 
     public CompletableFuture<Void> add(UUID uuid, String createdBy) {
@@ -61,8 +66,28 @@ public final class WhitelistService {
         return databaseExecutor.submit(repository::findAll);
     }
 
-    public CompletableFuture<Optional<UUID>> findPlayerUuid(String username) {
-        return playerService.findByUsername(username).thenApply(player -> player.map(Player::uuid));
+    public CompletableFuture<List<WhitelistUser>> listUsers() {
+        return cacheReady.thenCompose(ignored -> playerService.findAll())
+                .thenApply(players -> {
+                    Set<UUID> whitelisted = cache.snapshot();
+                    return players.stream()
+                            .map(player -> new WhitelistUser(player, whitelisted.contains(player.uuid())))
+                            .sorted(Comparator
+                                    .comparing((WhitelistUser user) -> usernameSortKey(user.player()), String.CASE_INSENSITIVE_ORDER)
+                                    .thenComparing(user -> user.player().uuid()))
+                            .toList();
+                });
+    }
+
+    private String usernameSortKey(Player player) {
+        if (player.username() == null) {
+            return "";
+        }
+        return player.username();
+    }
+
+    public CompletableFuture<PlayerResolution> findPlayerUuid(String username) {
+        return playerService.findByIdentifier(username);
     }
 
     public Set<UUID> cachedPlayers() {

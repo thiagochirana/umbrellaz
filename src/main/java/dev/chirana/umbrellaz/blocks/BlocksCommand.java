@@ -3,6 +3,7 @@ package dev.chirana.umbrellaz.blocks;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import dev.chirana.umbrellaz.authorization.AuthorizationService;
+import dev.chirana.umbrellaz.authorization.CommandAuthorization;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -92,9 +93,7 @@ public final class BlocksCommand {
     }
 
     private boolean authorized(CommandSourceStack source) {
-        return source.getEntity() == null
-                || source.getEntity() instanceof ServerPlayer player
-                && authorizationService.isAdministrator(player.getUUID());
+        return CommandAuthorization.isAdministrator(source, authorizationService);
     }
 
     private void deny(CommandSourceStack source) {

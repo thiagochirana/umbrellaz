@@ -3,7 +3,11 @@ package dev.chirana.umbrellaz.whitelist;
 import dev.chirana.umbrellaz.auth.AuthService;
 import dev.chirana.umbrellaz.auth.AuthEvents;
 import dev.chirana.umbrellaz.authorization.AuthorizationService;
+import dev.chirana.umbrellaz.authorization.CommandAuthorization;
 import dev.chirana.umbrellaz.config.UmbrellazConfig;
+import dev.chirana.umbrellaz.player.PlayerResolution;
+import dev.chirana.umbrellaz.player.Player;
+import dev.chirana.umbrellaz.player.OnlinePlayerSuggestions;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
@@ -27,12 +31,20 @@ public final class WhitelistCommand {
     private final AuthorizationService authorizationService;
     private final AuthService authService;
     private final UmbrellazConfig config;
+    private final OnlinePlayerSuggestions playerSuggestions;
 
     public WhitelistCommand(WhitelistService whitelistService, AuthorizationService authorizationService, AuthService authService, UmbrellazConfig config) {
+        this(whitelistService, authorizationService, authService, config, new OnlinePlayerSuggestions());
+    }
+
+    public WhitelistCommand(WhitelistService whitelistService, AuthorizationService authorizationService,
+                            AuthService authService, UmbrellazConfig config,
+                            OnlinePlayerSuggestions playerSuggestions) {
         this.whitelistService = whitelistService;
         this.authorizationService = authorizationService;
         this.authService = authService;
         this.config = config;
+        this.playerSuggestions = playerSuggestions;
     }
 
     public void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -56,14 +68,23 @@ public final class WhitelistCommand {
                         .executes(context -> list(context.getSource(), false))
                         .then(Commands.literal("details")
                                 .executes(context -> list(context.getSource(), true))))
+                .then(Commands.literal("users")
+                        .then(Commands.literal("list")
+                                .executes(context -> listUsers(context.getSource(), null))
+                                .then(Commands.literal("non-auth")
+                                        .executes(context -> listUsers(context.getSource(), UserListSection.NON_AUTH)))
+                                .then(Commands.literal("auth")
+                                        .executes(context -> listUsers(context.getSource(), UserListSection.AUTH)))))
                 .then(Commands.literal("add")
                         .then(Commands.argument("player", StringArgumentType.word())
+                                .suggests(playerSuggestions)
                                 .executes(context -> add(context.getSource(), StringArgumentType.getString(context, "player")))))
                 .then(removeCommand("remove"))
                 .then(removeCommand("rm"))
                 .then(Commands.literal("check")
                         .then(Commands.argument("player", StringArgumentType.word())
-                        .executes(context -> check(context.getSource(), StringArgumentType.getString(context, "player")))));
+                                .suggests(playerSuggestions)
+                                .executes(context -> check(context.getSource(), StringArgumentType.getString(context, "player")))));
     }
 
     private int help(CommandSourceStack source) {
@@ -72,9 +93,12 @@ public final class WhitelistCommand {
         source.sendSuccess(() -> helpLine("/uz wl", "Atalho para /uz whitelist"), false);
         source.sendSuccess(() -> helpLine("/uz tp", "Teleporta jogadores · administradores"), false);
         source.sendSuccess(() -> helpLine("/uz time", "Altera o tempo dos mundos · administradores"), false);
+        source.sendSuccess(() -> helpLine("/uz sky", "Altera o clima dos mundos · administradores"), false);
         source.sendSuccess(() -> helpLine("/uz hp  /uz xp", "Consulta e altera HP ou XP · administradores"), false);
         source.sendSuccess(() -> helpLine("/uz kill", "Mata jogadores · administradores"), false);
+        source.sendSuccess(() -> helpLine("/uz user <jogador> alias <alias>", "Define aliases · administradores"), false);
         source.sendSuccess(() -> helpLine("/uz blocks", "Automação de árvores e minérios · administradores"), false);
+        source.sendSuccess(() -> helpLine("/uz reload", "Recarrega os caches do Umbrellaz · administradores"), false);
         source.sendSuccess(() -> Component.empty()
                 .append(Component.literal("  Dica  ").withStyle(ChatFormatting.DARK_GRAY, ChatFormatting.BOLD))
                 .append(Component.literal("Use ").withStyle(ChatFormatting.GRAY))
@@ -87,6 +111,9 @@ public final class WhitelistCommand {
         source.sendSuccess(() -> header("Whitelist"), false);
         source.sendSuccess(() -> helpLine("/uz wl list", "Lista os jogadores autorizados"), false);
         source.sendSuccess(() -> helpLine("/uz wl list details", "Mostra UUID, data e quem adicionou"), false);
+        source.sendSuccess(() -> helpLine("/uz wl users list", "Lista jogadores conhecidos por status da whitelist"), false);
+        source.sendSuccess(() -> helpLine("/uz wl users list non-auth", "Lista jogadores não autorizados pela whitelist"), false);
+        source.sendSuccess(() -> helpLine("/uz wl users list auth", "Lista jogadores autorizados pela whitelist"), false);
         source.sendSuccess(() -> helpLine("/uz wl add <jogador>", "Adiciona à whitelist e libera o acesso"), false);
         source.sendSuccess(() -> helpLine("/uz wl remove <jogador>", "Remove da whitelist e aplica o bloqueio"), false);
         source.sendSuccess(() -> helpLine("/uz wl rm <jogador>", "Atalho para remove"), false);
@@ -97,6 +124,7 @@ public final class WhitelistCommand {
     private com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> removeCommand(String name) {
         return Commands.literal(name)
                 .then(Commands.argument("player", StringArgumentType.word())
+                        .suggests(playerSuggestions)
                         .executes(context -> remove(context.getSource(), StringArgumentType.getString(context, "player"))));
     }
 
@@ -128,6 +156,96 @@ public final class WhitelistCommand {
             })).exceptionally(throwable -> report(source, "Não foi possível listar a whitelist"));
         })).exceptionally(throwable -> report(source, "Não foi possível autorizar o comando"));
         return 1;
+    }
+
+    private int listUsers(CommandSourceStack source, UserListSection requestedSection) {
+        authorized(source).thenAccept(allowed -> source.getServer().execute(() -> {
+            if (!allowed) {
+                deny(source);
+                return;
+            }
+            whitelistService.listUsers().thenAccept(users -> source.getServer().execute(() ->
+                    sendUsers(source, users, requestedSection))).exceptionally(throwable ->
+                    report(source, "Não foi possível listar os jogadores conhecidos"));
+        })).exceptionally(throwable -> report(source, "Não foi possível autorizar o comando"));
+        return 1;
+    }
+
+    private void sendUsers(CommandSourceStack source, java.util.List<WhitelistUser> users,
+                           UserListSection requestedSection) {
+        if (users.isEmpty()) {
+            source.sendSuccess(() -> warning("Nenhum jogador conhecido."), false);
+            return;
+        }
+
+        if (requestedSection != null) {
+            sendUsersSection(source, users.stream()
+                    .filter(user -> requestedSection.matches(user.whitelisted()))
+                    .toList(), requestedSection);
+            return;
+        }
+
+        java.util.List<WhitelistUser> nonAuth = users.stream()
+                .filter(user -> !user.whitelisted())
+                .toList();
+        java.util.List<WhitelistUser> auth = users.stream()
+                .filter(WhitelistUser::whitelisted)
+                .toList();
+        if (nonAuth.isEmpty() && auth.isEmpty()) {
+            source.sendSuccess(() -> warning("Nenhum jogador conhecido."), false);
+            return;
+        }
+        if (!nonAuth.isEmpty()) {
+            sendUsersSection(source, nonAuth, UserListSection.NON_AUTH);
+        }
+        if (!auth.isEmpty()) {
+            sendUsersSection(source, auth, UserListSection.AUTH);
+        }
+    }
+
+    private void sendUsersSection(CommandSourceStack source, java.util.List<WhitelistUser> users,
+                                  UserListSection section) {
+        source.sendSuccess(() -> Component.empty()
+                .append(Component.literal(section.heading).withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD))
+                .append(Component.literal("  " + users.size() + (users.size() == 1 ? " jogador" : " jogadores"))
+                        .withStyle(ChatFormatting.YELLOW)), false);
+        if (users.isEmpty()) {
+            source.sendSuccess(() -> warning("Nenhum jogador nesta seção."), false);
+            return;
+        }
+        users.forEach(user -> source.sendSuccess(() -> Component.empty()
+                .append(Component.literal("  • ").withStyle(ChatFormatting.DARK_GRAY))
+                .append(displayUser(user)), false));
+    }
+
+    private Component displayUser(WhitelistUser user) {
+        Player player = user.player();
+        String username = player.username();
+        String displayedUsername = username == null
+                ? "<nome nulo>"
+                : username.isBlank() ? "<nome em branco>" : username;
+        var result = Component.empty().append(playerName(displayedUsername));
+        if (player.alias() != null) {
+            String displayedAlias = player.alias().isBlank() ? "<em branco>" : player.alias();
+            result.append(Component.literal("  · alias: ").withStyle(ChatFormatting.GRAY))
+                    .append(Component.literal(displayedAlias).withStyle(ChatFormatting.LIGHT_PURPLE));
+        }
+        return result;
+    }
+
+    private enum UserListSection {
+        NON_AUTH("◆ JOGADORES · NÃO AUTORIZADOS PELA WHITELIST"),
+        AUTH("◆ JOGADORES · AUTORIZADOS PELA WHITELIST");
+
+        private final String heading;
+
+        UserListSection(String heading) {
+            this.heading = heading;
+        }
+
+        private boolean matches(boolean whitelisted) {
+            return (this == AUTH) == whitelisted;
+        }
     }
 
     private void sendDetails(CommandSourceStack source, WhitelistEntry entry) {
@@ -162,14 +280,11 @@ public final class WhitelistCommand {
                 return;
             }
             whitelistService.addByUsername(username, source.getTextName()).thenAccept(result -> source.getServer().execute(() -> {
-                if (result.isEmpty()) {
-                    source.sendFailure(Component.empty()
-                            .append(errorPrefix())
-                            .append(Component.literal("Jogador desconhecido: ").withStyle(ChatFormatting.RED))
-                            .append(playerName(username)));
+                if (result.status() != PlayerResolution.Status.FOUND) {
+                    resolutionFailure(source, username, result.status());
                     return;
                 }
-                UUID uuid = result.get();
+                UUID uuid = result.player().uuid();
                 authService.reconcileAuthorization(uuid).thenAccept(authenticated -> source.getServer().execute(() -> {
                     if (authenticated) {
                         source.sendSuccess(() -> Component.empty()
@@ -197,14 +312,11 @@ public final class WhitelistCommand {
                 return;
             }
             whitelistService.findPlayerUuid(username).thenAccept(result -> source.getServer().execute(() -> {
-                if (result.isEmpty()) {
-                    source.sendFailure(Component.empty()
-                            .append(errorPrefix())
-                            .append(Component.literal("Jogador desconhecido: ").withStyle(ChatFormatting.RED))
-                            .append(playerName(username)));
+                if (result.status() != PlayerResolution.Status.FOUND) {
+                    resolutionFailure(source, username, result.status());
                     return;
                 }
-                UUID uuid = result.get();
+                UUID uuid = result.player().uuid();
                 whitelistService.remove(uuid).thenCompose(ignored -> authService.reconcileAuthorization(uuid))
                         .thenAccept(authenticated -> source.getServer().execute(() -> {
                             if (!authenticated) {
@@ -232,7 +344,11 @@ public final class WhitelistCommand {
                 return;
             }
             whitelistService.findPlayerUuid(username).thenAccept(result -> source.getServer().execute(() -> {
-                boolean present = result.map(whitelistService::isWhitelisted).orElse(false);
+                if (result.status() != PlayerResolution.Status.FOUND) {
+                    resolutionFailure(source, username, result.status());
+                    return;
+                }
+                boolean present = whitelistService.isWhitelisted(result.player().uuid());
                 source.sendSuccess(() -> Component.empty()
                         .append(Component.literal(present ? "✓ " : "✕ ")
                                 .withStyle(present ? ChatFormatting.GREEN : ChatFormatting.RED, ChatFormatting.BOLD))
@@ -245,13 +361,7 @@ public final class WhitelistCommand {
     }
 
     private CompletableFuture<Boolean> authorized(CommandSourceStack source) {
-        if (source.getEntity() == null) {
-            return CompletableFuture.completedFuture(true);
-        }
-        if (!(source.getEntity() instanceof ServerPlayer player)) {
-            return CompletableFuture.completedFuture(false);
-        }
-        return CompletableFuture.completedFuture(authorizationService.isAdministrator(player.getUUID()));
+        return CompletableFuture.completedFuture(CommandAuthorization.isAdministrator(source, authorizationService));
     }
 
     private void deny(CommandSourceStack source) {
@@ -261,6 +371,19 @@ public final class WhitelistCommand {
     private Void report(CommandSourceStack source, String message) {
         source.getServer().execute(() -> source.sendFailure(error(message + ".")));
         return null;
+    }
+
+    private void resolutionFailure(CommandSourceStack source, String identifier, PlayerResolution.Status status) {
+        String message = switch (status) {
+            case AMBIGUOUS -> "Identificador ambíguo: ";
+            case NOT_READY -> "A resolução de aliases ainda não está pronta: ";
+            case NOT_FOUND -> "Jogador desconhecido: ";
+            case FOUND -> "";
+        };
+        source.sendFailure(Component.empty()
+                .append(errorPrefix())
+                .append(Component.literal(message).withStyle(ChatFormatting.RED))
+                .append(playerName(identifier)));
     }
 
     private Component header(String section) {

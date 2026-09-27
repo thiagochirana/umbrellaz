@@ -157,6 +157,7 @@ Responsibilities:
 
 - persist UUID
 - store latest known username
+- store one globally unique, case-insensitive alias per player
 - retrieve player records
 - update player metadata
 
@@ -169,6 +170,7 @@ Player
 ---------
 uuid
 username
+alias
 createdAt
 updatedAt
 ```
@@ -510,6 +512,7 @@ erDiagram
     PLAYERS {
         text uuid PK
         text username
+        text player_alias UK
         text created_at
         text updated_at
     }
@@ -619,9 +622,10 @@ Desired startup order:
 6. create repositories
 7. create services
 8. load whitelist cache
-9. register commands
-10. register events
-11. mark Umbrellaz ready
+9. load player alias cache
+10. register commands
+11. register events
+12. mark Umbrellaz ready
 ```
 
 Authorization must fail closed while startup state is incomplete.
@@ -828,8 +832,17 @@ Responsibilities may include:
 - lookup known player by UUID
 - lookup known player by stored username
 - update username when player joins
+- resolve an alias before a stored username
 
 External Mojang lookups are not part of the initial architecture.
+
+All identifier resolution uses an explicit result: found, not found, ambiguous,
+or not ready. Alias and stored/current username matches are combined before a
+player is selected; a collision never falls back to an arbitrary match. Online
+commands use a shared resolver backed by the in-memory alias cache and fail
+closed until that cache has loaded successfully. The resolver never queries
+SQLite on a command hot path; alias mutations update the cache only after
+persistence succeeds.
 
 ---
 

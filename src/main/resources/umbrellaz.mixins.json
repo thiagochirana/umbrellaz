@@ -6,7 +6,9 @@
     "ServerPlayNetworkHandlerMixin",
     "ItemEntityMixin",
     "ServerCommandSourceMixin",
-    "LivingEntityMixin"
+    "CommandSourceStackAccessor",
+    "LivingEntityMixin",
+    "BlockItemMixin"
   ],
   "injectors": {
     "defaultRequire": 1
