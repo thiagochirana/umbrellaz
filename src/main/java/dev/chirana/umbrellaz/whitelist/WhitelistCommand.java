@@ -94,7 +94,8 @@ public final class WhitelistCommand {
         source.sendSuccess(() -> helpLine("/uz tp", "Teleporta jogadores · administradores"), false);
         source.sendSuccess(() -> helpLine("/uz time", "Altera o tempo dos mundos · administradores"), false);
         source.sendSuccess(() -> helpLine("/uz sky", "Altera o clima dos mundos · administradores"), false);
-        source.sendSuccess(() -> helpLine("/uz hp  /uz xp", "Consulta e altera HP ou XP · administradores"), false);
+        source.sendSuccess(() -> helpLine("/uz hp  /uz xp  /uz food", "Consulta e altera HP, XP ou fome · administradores"), false);
+        source.sendSuccess(() -> helpLine("/uz hungry", "Atalho para /uz food"), false);
         source.sendSuccess(() -> helpLine("/uz kill", "Mata jogadores · administradores"), false);
         source.sendSuccess(() -> helpLine("/uz user <jogador> alias <alias>", "Define aliases · administradores"), false);
         source.sendSuccess(() -> helpLine("/uz blocks", "Automação de árvores e minérios · administradores"), false);

@@ -41,10 +41,14 @@ public final class PlayerStatusCommand {
         dispatcher.register(Commands.literal("umbrellaz")
                 .then(healthCommand("hp"))
                 .then(experienceCommand("xp"))
+                .then(foodCommand("food"))
+                .then(foodCommand("hungry"))
                 .then(killCommand()));
         dispatcher.register(Commands.literal("uz")
                 .then(healthCommand("hp"))
                 .then(experienceCommand("xp"))
+                .then(foodCommand("food"))
+                .then(foodCommand("hungry"))
                 .then(killCommand()));
     }
 
@@ -129,6 +133,56 @@ public final class PlayerStatusCommand {
                         .executes(context -> killPlayer(
                                 context.getSource(),
                                 StringArgumentType.getString(context, "player"))));
+    }
+
+    private LiteralArgumentBuilder<CommandSourceStack> foodCommand(String name) {
+        return Commands.literal(name)
+                .executes(context -> foodHelp(context.getSource()))
+                .then(Commands.literal("help").executes(context -> foodHelp(context.getSource())))
+                .then(selfFoodCommand())
+                .then(foodPlayerCommand());
+    }
+
+    private LiteralArgumentBuilder<CommandSourceStack> selfFoodCommand() {
+        return Commands.literal("self")
+                .executes(context -> showFood(context.getSource(), context.getSource().getPlayer(), "self"))
+                .then(Commands.literal("add")
+                        .then(Commands.argument("amount", IntegerArgumentType.integer(0))
+                                .executes(context -> addFood(
+                                        context.getSource(),
+                                        context.getSource().getPlayer(),
+                                        IntegerArgumentType.getInteger(context, "amount"),
+                                        "self"))))
+                .then(Commands.literal("rm")
+                        .then(Commands.argument("amount", IntegerArgumentType.integer(0))
+                                .executes(context -> removeFood(
+                                        context.getSource(),
+                                        context.getSource().getPlayer(),
+                                        IntegerArgumentType.getInteger(context, "amount"),
+                                        "self"))));
+    }
+
+    private RequiredArgumentBuilder<CommandSourceStack, String> foodPlayerCommand() {
+        return Commands.argument("player", StringArgumentType.word())
+                .suggests(playerSuggestions)
+                .executes(context -> {
+                    String name = StringArgumentType.getString(context, "player");
+                    return showFood(context.getSource(), findPlayer(context.getSource(), name), name);
+                })
+                .then(Commands.literal("add")
+                        .then(Commands.argument("amount", IntegerArgumentType.integer(0))
+                                .executes(context -> {
+                                    String name = StringArgumentType.getString(context, "player");
+                                    return addFood(context.getSource(), findPlayer(context.getSource(), name),
+                                            IntegerArgumentType.getInteger(context, "amount"), name);
+                                })))
+                .then(Commands.literal("rm")
+                        .then(Commands.argument("amount", IntegerArgumentType.integer(0))
+                                .executes(context -> {
+                                    String name = StringArgumentType.getString(context, "player");
+                                    return removeFood(context.getSource(), findPlayer(context.getSource(), name),
+                                            IntegerArgumentType.getInteger(context, "amount"), name);
+                                })));
     }
 
     private LiteralArgumentBuilder<CommandSourceStack> selfExperienceCommand() {
@@ -398,6 +452,93 @@ public final class PlayerStatusCommand {
         return removeExperience(source, resolution.player(), amount, name);
     }
 
+    private int showFood(CommandSourceStack source, ServerPlayer player, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (player == null) {
+            return unknownPlayer(source, name);
+        }
+        source.sendSuccess(() -> Component.empty()
+                .append(Component.literal("🍖 ").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD))
+                .append(playerName(player))
+                .append(Component.literal("  FOME  ").withStyle(ChatFormatting.GRAY))
+                .append(Component.literal(Integer.toString(player.getFoodData().getFoodLevel()))
+                        .withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD))
+                .append(Component.literal(" / 20").withStyle(ChatFormatting.GOLD)), false);
+        return 1;
+    }
+
+    private int showFood(CommandSourceStack source, OnlinePlayerResolution resolution, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (resolution.status() != OnlinePlayerResolution.Status.FOUND) {
+            return resolutionFailure(source, name, resolution.status());
+        }
+        return showFood(source, resolution.player(), name);
+    }
+
+    private int addFood(CommandSourceStack source, ServerPlayer player, int amount, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (player == null) {
+            return unknownPlayer(source, name);
+        }
+        int next = FoodLevelArithmetic.add(player.getFoodData().getFoodLevel(), amount);
+        player.getFoodData().setFoodLevel(next);
+        source.sendSuccess(() -> Component.empty()
+                .append(successPrefix())
+                .append(Component.literal("+" + amount + " fome").withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD))
+                .append(Component.literal(" para ").withStyle(ChatFormatting.GREEN))
+                .append(playerName(player))
+                .append(Component.literal("  ·  Total ").withStyle(ChatFormatting.GRAY))
+                .append(Component.literal(Integer.toString(next) + " / 20")
+                        .withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD)), true);
+        return 1;
+    }
+
+    private int addFood(CommandSourceStack source, OnlinePlayerResolution resolution, int amount, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (resolution.status() != OnlinePlayerResolution.Status.FOUND) {
+            return resolutionFailure(source, name, resolution.status());
+        }
+        return addFood(source, resolution.player(), amount, name);
+    }
+
+    private int removeFood(CommandSourceStack source, ServerPlayer player, int amount, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (player == null) {
+            return unknownPlayer(source, name);
+        }
+        int next = FoodLevelArithmetic.remove(player.getFoodData().getFoodLevel(), amount);
+        player.getFoodData().setFoodLevel(next);
+        source.sendSuccess(() -> Component.empty()
+                .append(successPrefix())
+                .append(Component.literal("−" + amount + " fome").withStyle(ChatFormatting.YELLOW, ChatFormatting.BOLD))
+                .append(Component.literal(" de ").withStyle(ChatFormatting.GREEN))
+                .append(playerName(player))
+                .append(Component.literal("  ·  Total ").withStyle(ChatFormatting.GRAY))
+                .append(Component.literal(Integer.toString(next) + " / 20")
+                        .withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD)), true);
+        return 1;
+    }
+
+    private int removeFood(CommandSourceStack source, OnlinePlayerResolution resolution, int amount, String name) {
+        if (!authorized(source)) {
+            return deny(source);
+        }
+        if (resolution.status() != OnlinePlayerResolution.Status.FOUND) {
+            return resolutionFailure(source, name, resolution.status());
+        }
+        return removeFood(source, resolution.player(), amount, name);
+    }
+
     private int killPlayer(CommandSourceStack source, String name) {
         if (!authorized(source)) {
             return deny(source);
@@ -473,6 +614,16 @@ public final class PlayerStatusCommand {
         source.sendSuccess(() -> helpLine("/uz xp <jogador>", "Mostra os pontos totais e o nível"), false);
         source.sendSuccess(() -> helpLine("/uz xp <jogador> add <pontos>", "Adiciona pontos de XP"), false);
         source.sendSuccess(() -> helpLine("/uz xp <jogador> rm <pontos>", "Remove pontos de XP"), false);
+        source.sendSuccess(() -> selfHint(), false);
+        return 1;
+    }
+
+    private int foodHelp(CommandSourceStack source) {
+        source.sendSuccess(() -> header("Fome · administradores"), false);
+        source.sendSuccess(() -> helpLine("/uz food <jogador>", "Mostra a fome atual de 0 a 20"), false);
+        source.sendSuccess(() -> helpLine("/uz food <jogador> add <pontos>", "Adiciona fome até 20"), false);
+        source.sendSuccess(() -> helpLine("/uz food <jogador> rm <pontos>", "Remove fome até 0"), false);
+        source.sendSuccess(() -> helpLine("/uz hungry", "Atalho para /uz food"), false);
         source.sendSuccess(() -> selfHint(), false);
         return 1;
     }
