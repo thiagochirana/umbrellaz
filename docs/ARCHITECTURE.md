@@ -283,6 +283,12 @@ Administrative authorization is controlled internally by the
 the system bootstrap source; player command sources must be present in that
 table to manage Umbrellaz administration.
 
+The current command policy rejects every player-originated command from a
+non-administrator, including an authenticated non-administrator. Umbrellaz
+command adapters still perform their own administrator checks. Any future
+exception must go through `AuthorizationService`; it must not weaken the
+fail-closed policy.
+
 This should be wrapped in:
 
 ```text

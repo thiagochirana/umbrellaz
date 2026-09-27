@@ -12,7 +12,7 @@ public final class HealthLockEvents {
 
     public static void register(HealthLockService healthLockService) {
         runtimeService = healthLockService;
-        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> healthLockService.clear(handler.player.getUuid()));
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> healthLockService.clear(handler.player.getUUID()));
     }
 
     public static boolean isLocked(UUID playerUuid) {

@@ -4,12 +4,12 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import dev.chirana.umbrellaz.authorization.AuthorizationService;
+import net.minecraft.ChatFormatting;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.command.CommandManager;
-import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
+import net.minecraft.server.level.ServerLevel;
 
 public final class WorldTimeCommand {
     private static final int DAY = 1000;
@@ -23,87 +23,88 @@ public final class WorldTimeCommand {
         this.authorizationService = authorizationService;
     }
 
-    public void register(CommandDispatcher<ServerCommandSource> dispatcher) {
-        dispatcher.register(CommandManager.literal("umbrellaz").then(timeCommand("time")));
-        dispatcher.register(CommandManager.literal("uz").then(timeCommand("time")));
+    public void register(CommandDispatcher<CommandSourceStack> dispatcher) {
+        dispatcher.register(Commands.literal("umbrellaz").then(timeCommand("time")));
+        dispatcher.register(Commands.literal("uz").then(timeCommand("time")));
     }
 
-    private LiteralArgumentBuilder<ServerCommandSource> timeCommand(String name) {
-        return CommandManager.literal(name)
+    private LiteralArgumentBuilder<CommandSourceStack> timeCommand(String name) {
+        return Commands.literal(name)
                 .executes(context -> help(context.getSource()))
-                .then(CommandManager.literal("help").executes(context -> help(context.getSource())))
-                .then(CommandManager.literal("day").executes(context -> setTime(context.getSource(), DAY, "day")))
-                .then(CommandManager.literal("dia").executes(context -> setTime(context.getSource(), DAY, "dia")))
-                .then(CommandManager.literal("noon").executes(context -> setTime(context.getSource(), NOON, "noon")))
-                .then(CommandManager.literal("meio-dia").executes(context -> setTime(context.getSource(), NOON, "meio-dia")))
-                .then(CommandManager.literal("night").executes(context -> setTime(context.getSource(), NIGHT, "night")))
-                .then(CommandManager.literal("noite").executes(context -> setTime(context.getSource(), NIGHT, "noite")))
-                .then(CommandManager.literal("midnight").executes(context -> setTime(context.getSource(), MIDNIGHT, "midnight")))
-                .then(CommandManager.literal("meia-noite").executes(context -> setTime(context.getSource(), MIDNIGHT, "meia-noite")))
-                .then(CommandManager.argument("time", IntegerArgumentType.integer(0))
+                .then(Commands.literal("help").executes(context -> help(context.getSource())))
+                .then(Commands.literal("day").executes(context -> setTime(context.getSource(), DAY, "day")))
+                .then(Commands.literal("dia").executes(context -> setTime(context.getSource(), DAY, "dia")))
+                .then(Commands.literal("noon").executes(context -> setTime(context.getSource(), NOON, "noon")))
+                .then(Commands.literal("meio-dia").executes(context -> setTime(context.getSource(), NOON, "meio-dia")))
+                .then(Commands.literal("night").executes(context -> setTime(context.getSource(), NIGHT, "night")))
+                .then(Commands.literal("noite").executes(context -> setTime(context.getSource(), NIGHT, "noite")))
+                .then(Commands.literal("midnight").executes(context -> setTime(context.getSource(), MIDNIGHT, "midnight")))
+                .then(Commands.literal("meia-noite").executes(context -> setTime(context.getSource(), MIDNIGHT, "meia-noite")))
+                .then(Commands.argument("time", IntegerArgumentType.integer(0))
                         .executes(context -> setTime(
                                 context.getSource(),
                                 IntegerArgumentType.getInteger(context, "time"),
                                 "valor personalizado")));
     }
 
-    private int setTime(ServerCommandSource source, int time, String label) {
+    private int setTime(CommandSourceStack source, int time, String label) {
         if (!authorized(source)) {
-            source.sendError(error("Você não tem autorização Umbrellaz para alterar o tempo."));
+            source.sendFailure(error("Você não tem autorização Umbrellaz para alterar o tempo."));
             return 0;
         }
-        for (ServerWorld world : source.getServer().getWorlds()) {
-            world.setTimeOfDay(time);
+        for (ServerLevel world : source.getServer().getAllLevels()) {
+            world.dimensionTypeRegistration().value().defaultClock()
+                    .ifPresent(clock -> source.getServer().clockManager().setTotalTicks(clock, time));
         }
-        source.sendFeedback(() -> Text.empty()
+        source.sendSuccess(() -> Component.empty()
                 .append(successPrefix())
-                .append(Text.literal("Tempo definido: ").formatted(Formatting.GREEN))
-                .append(Text.literal(label).formatted(Formatting.YELLOW, Formatting.BOLD))
-                .append(Text.literal("  ·  ").formatted(Formatting.DARK_GRAY))
-                .append(Text.literal(Integer.toString(time) + " ticks").formatted(Formatting.GOLD, Formatting.BOLD))
-                .append(Text.literal(" em todos os mundos.").formatted(Formatting.GREEN)), true);
+                .append(Component.literal("Tempo definido: ").withStyle(ChatFormatting.GREEN))
+                .append(Component.literal(label).withStyle(ChatFormatting.YELLOW, ChatFormatting.BOLD))
+                .append(Component.literal("  ·  ").withStyle(ChatFormatting.DARK_GRAY))
+                .append(Component.literal(Integer.toString(time) + " ticks").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD))
+                .append(Component.literal(" em todos os mundos.").withStyle(ChatFormatting.GREEN)), true);
         return 1;
     }
 
-    private boolean authorized(ServerCommandSource source) {
+    private boolean authorized(CommandSourceStack source) {
         return source.getEntity() == null
-                || source.getEntity() instanceof net.minecraft.server.network.ServerPlayerEntity player
-                && authorizationService.isAdministrator(player.getUuid());
+                || source.getEntity() instanceof net.minecraft.server.level.ServerPlayer player
+                && authorizationService.isAdministrator(player.getUUID());
     }
 
-    private int help(ServerCommandSource source) {
-        source.sendFeedback(() -> header("Tempo · administradores"), false);
-        source.sendFeedback(() -> helpLine("/uz time day", "Define o período diurno Vanilla (1000 ticks)"), false);
-        source.sendFeedback(() -> helpLine("/uz time dia", "Atalho em português para day"), false);
-        source.sendFeedback(() -> helpLine("/uz time noon", "Define o meio-dia (6000 ticks)"), false);
-        source.sendFeedback(() -> helpLine("/uz time meio-dia", "Atalho em português para noon"), false);
-        source.sendFeedback(() -> helpLine("/uz time night", "Define a noite Vanilla (13000 ticks)"), false);
-        source.sendFeedback(() -> helpLine("/uz time noite", "Atalho em português para night"), false);
-        source.sendFeedback(() -> helpLine("/uz time midnight", "Define meia-noite (18000 ticks)"), false);
-        source.sendFeedback(() -> helpLine("/uz time meia-noite", "Atalho em português para midnight"), false);
-        source.sendFeedback(() -> helpLine("/uz time <número>", "Define um valor inteiro de ticks"), false);
+    private int help(CommandSourceStack source) {
+        source.sendSuccess(() -> header("Tempo · administradores"), false);
+        source.sendSuccess(() -> helpLine("/uz time day", "Define o período diurno Vanilla (1000 ticks)"), false);
+        source.sendSuccess(() -> helpLine("/uz time dia", "Atalho em português para day"), false);
+        source.sendSuccess(() -> helpLine("/uz time noon", "Define o meio-dia (6000 ticks)"), false);
+        source.sendSuccess(() -> helpLine("/uz time meio-dia", "Atalho em português para noon"), false);
+        source.sendSuccess(() -> helpLine("/uz time night", "Define a noite Vanilla (13000 ticks)"), false);
+        source.sendSuccess(() -> helpLine("/uz time noite", "Atalho em português para night"), false);
+        source.sendSuccess(() -> helpLine("/uz time midnight", "Define meia-noite (18000 ticks)"), false);
+        source.sendSuccess(() -> helpLine("/uz time meia-noite", "Atalho em português para midnight"), false);
+        source.sendSuccess(() -> helpLine("/uz time <número>", "Define um valor inteiro de ticks"), false);
         return 1;
     }
 
-    private Text header(String section) {
-        return Text.empty()
-                .append(Text.literal("◆ UMBRELLAZ").formatted(Formatting.GOLD, Formatting.BOLD))
-                .append(Text.literal("  " + section).formatted(Formatting.YELLOW));
+    private Component header(String section) {
+        return Component.empty()
+                .append(Component.literal("◆ UMBRELLAZ").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD))
+                .append(Component.literal("  " + section).withStyle(ChatFormatting.YELLOW));
     }
 
-    private Text helpLine(String command, String description) {
-        return Text.empty()
-                .append(Text.literal("  " + command).formatted(Formatting.YELLOW))
-                .append(Text.literal("  —  " + description).formatted(Formatting.GRAY));
+    private Component helpLine(String command, String description) {
+        return Component.empty()
+                .append(Component.literal("  " + command).withStyle(ChatFormatting.YELLOW))
+                .append(Component.literal("  —  " + description).withStyle(ChatFormatting.GRAY));
     }
 
-    private Text successPrefix() {
-        return Text.literal("✓ ").formatted(Formatting.GREEN, Formatting.BOLD);
+    private Component successPrefix() {
+        return Component.literal("✓ ").withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD);
     }
 
-    private Text error(String message) {
-        return Text.empty()
-                .append(Text.literal("✕ ").formatted(Formatting.RED, Formatting.BOLD))
-                .append(Text.literal(message).formatted(Formatting.RED));
+    private Component error(String message) {
+        return Component.empty()
+                .append(Component.literal("✕ ").withStyle(ChatFormatting.RED, ChatFormatting.BOLD))
+                .append(Component.literal(message).withStyle(ChatFormatting.RED));
     }
 }

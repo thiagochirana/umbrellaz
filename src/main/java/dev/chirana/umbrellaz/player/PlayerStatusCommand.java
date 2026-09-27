@@ -7,11 +7,11 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import dev.chirana.umbrellaz.authorization.AuthorizationService;
-import net.minecraft.server.command.CommandManager;
-import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
+import net.minecraft.ChatFormatting;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
 
 public final class PlayerStatusCommand {
     private final AuthorizationService authorizationService;
@@ -22,110 +22,110 @@ public final class PlayerStatusCommand {
         this.healthLockService = healthLockService;
     }
 
-    public void register(CommandDispatcher<ServerCommandSource> dispatcher) {
-        dispatcher.register(CommandManager.literal("umbrellaz")
+    public void register(CommandDispatcher<CommandSourceStack> dispatcher) {
+        dispatcher.register(Commands.literal("umbrellaz")
                 .then(healthCommand("hp"))
                 .then(experienceCommand("xp"))
                 .then(killCommand()));
-        dispatcher.register(CommandManager.literal("uz")
+        dispatcher.register(Commands.literal("uz")
                 .then(healthCommand("hp"))
                 .then(experienceCommand("xp"))
                 .then(killCommand()));
     }
 
-    private LiteralArgumentBuilder<ServerCommandSource> healthCommand(String name) {
-        return CommandManager.literal(name)
+    private LiteralArgumentBuilder<CommandSourceStack> healthCommand(String name) {
+        return Commands.literal(name)
                 .executes(context -> healthHelp(context.getSource()))
-                .then(CommandManager.literal("help").executes(context -> healthHelp(context.getSource())))
+                .then(Commands.literal("help").executes(context -> healthHelp(context.getSource())))
                 .then(selfHealthCommand())
                 .then(healthPlayerCommand());
     }
 
-    private LiteralArgumentBuilder<ServerCommandSource> selfHealthCommand() {
-        return CommandManager.literal("self")
+    private LiteralArgumentBuilder<CommandSourceStack> selfHealthCommand() {
+        return Commands.literal("self")
                 .executes(context -> showHealth(context.getSource(), context.getSource().getPlayer(), "self"))
-                .then(CommandManager.literal("add")
-                        .then(CommandManager.argument("amount", DoubleArgumentType.doubleArg(0.0))
+                .then(Commands.literal("add")
+                        .then(Commands.argument("amount", DoubleArgumentType.doubleArg(0.0))
                                 .executes(context -> addHealth(
                                         context.getSource(),
                                         context.getSource().getPlayer(),
                                         DoubleArgumentType.getDouble(context, "amount"),
                                         "self"))))
-                .then(CommandManager.literal("rm")
-                        .then(CommandManager.argument("amount", DoubleArgumentType.doubleArg(0.0))
+                .then(Commands.literal("rm")
+                        .then(Commands.argument("amount", DoubleArgumentType.doubleArg(0.0))
                                 .executes(context -> removeHealth(
                                         context.getSource(),
                                         context.getSource().getPlayer(),
                                         DoubleArgumentType.getDouble(context, "amount"),
                                         "self"))))
-                .then(CommandManager.literal("lock")
+                .then(Commands.literal("lock")
                         .executes(context -> lockHealth(context.getSource(), context.getSource().getPlayer(), "self")))
-                .then(CommandManager.literal("unlock")
+                .then(Commands.literal("unlock")
                         .executes(context -> unlockHealth(context.getSource(), context.getSource().getPlayer(), "self")));
     }
 
-    private RequiredArgumentBuilder<ServerCommandSource, String> healthPlayerCommand() {
-        return CommandManager.argument("player", StringArgumentType.word())
+    private RequiredArgumentBuilder<CommandSourceStack, String> healthPlayerCommand() {
+        return Commands.argument("player", StringArgumentType.word())
                 .executes(context -> {
                     String name = StringArgumentType.getString(context, "player");
                     return showHealth(context.getSource(), findPlayer(context.getSource(), name), name);
                 })
-                .then(CommandManager.literal("add")
-                        .then(CommandManager.argument("amount", DoubleArgumentType.doubleArg(0.0))
+                .then(Commands.literal("add")
+                        .then(Commands.argument("amount", DoubleArgumentType.doubleArg(0.0))
                                 .executes(context -> {
                                     String name = StringArgumentType.getString(context, "player");
                                     return addHealth(context.getSource(), findPlayer(context.getSource(), name),
                                             DoubleArgumentType.getDouble(context, "amount"), name);
                                 })))
-                .then(CommandManager.literal("rm")
-                        .then(CommandManager.argument("amount", DoubleArgumentType.doubleArg(0.0))
+                .then(Commands.literal("rm")
+                        .then(Commands.argument("amount", DoubleArgumentType.doubleArg(0.0))
                                 .executes(context -> {
                                     String name = StringArgumentType.getString(context, "player");
                                     return removeHealth(context.getSource(), findPlayer(context.getSource(), name),
                                             DoubleArgumentType.getDouble(context, "amount"), name);
                                 })))
-                .then(CommandManager.literal("lock")
+                .then(Commands.literal("lock")
                         .executes(context -> {
                             String name = StringArgumentType.getString(context, "player");
                             return lockHealth(context.getSource(), findPlayer(context.getSource(), name), name);
                         }))
-                .then(CommandManager.literal("unlock")
+                .then(Commands.literal("unlock")
                         .executes(context -> {
                             String name = StringArgumentType.getString(context, "player");
                             return unlockHealth(context.getSource(), findPlayer(context.getSource(), name), name);
                         }));
     }
 
-    private LiteralArgumentBuilder<ServerCommandSource> experienceCommand(String name) {
-        return CommandManager.literal(name)
+    private LiteralArgumentBuilder<CommandSourceStack> experienceCommand(String name) {
+        return Commands.literal(name)
                 .executes(context -> experienceHelp(context.getSource()))
-                .then(CommandManager.literal("help").executes(context -> experienceHelp(context.getSource())))
+                .then(Commands.literal("help").executes(context -> experienceHelp(context.getSource())))
                 .then(selfExperienceCommand())
                 .then(experiencePlayerCommand());
     }
 
-    private LiteralArgumentBuilder<ServerCommandSource> killCommand() {
-        return CommandManager.literal("kill")
+    private LiteralArgumentBuilder<CommandSourceStack> killCommand() {
+        return Commands.literal("kill")
                 .executes(context -> killHelp(context.getSource()))
-                .then(CommandManager.literal("help").executes(context -> killHelp(context.getSource())))
-                .then(CommandManager.argument("player", StringArgumentType.word())
+                .then(Commands.literal("help").executes(context -> killHelp(context.getSource())))
+                .then(Commands.argument("player", StringArgumentType.word())
                         .executes(context -> killPlayer(
                                 context.getSource(),
                                 StringArgumentType.getString(context, "player"))));
     }
 
-    private LiteralArgumentBuilder<ServerCommandSource> selfExperienceCommand() {
-        return CommandManager.literal("self")
+    private LiteralArgumentBuilder<CommandSourceStack> selfExperienceCommand() {
+        return Commands.literal("self")
                 .executes(context -> showExperience(context.getSource(), context.getSource().getPlayer(), "self"))
-                .then(CommandManager.literal("add")
-                        .then(CommandManager.argument("amount", IntegerArgumentType.integer(0))
+                .then(Commands.literal("add")
+                        .then(Commands.argument("amount", IntegerArgumentType.integer(0))
                                 .executes(context -> addExperience(
                                         context.getSource(),
                                         context.getSource().getPlayer(),
                                         IntegerArgumentType.getInteger(context, "amount"),
                                         "self"))))
-                .then(CommandManager.literal("rm")
-                        .then(CommandManager.argument("amount", IntegerArgumentType.integer(0))
+                .then(Commands.literal("rm")
+                        .then(Commands.argument("amount", IntegerArgumentType.integer(0))
                                 .executes(context -> removeExperience(
                                         context.getSource(),
                                         context.getSource().getPlayer(),
@@ -133,21 +133,21 @@ public final class PlayerStatusCommand {
                                         "self"))));
     }
 
-    private RequiredArgumentBuilder<ServerCommandSource, String> experiencePlayerCommand() {
-        return CommandManager.argument("player", StringArgumentType.word())
+    private RequiredArgumentBuilder<CommandSourceStack, String> experiencePlayerCommand() {
+        return Commands.argument("player", StringArgumentType.word())
                 .executes(context -> {
                     String name = StringArgumentType.getString(context, "player");
                     return showExperience(context.getSource(), findPlayer(context.getSource(), name), name);
                 })
-                .then(CommandManager.literal("add")
-                        .then(CommandManager.argument("amount", IntegerArgumentType.integer(0))
+                .then(Commands.literal("add")
+                        .then(Commands.argument("amount", IntegerArgumentType.integer(0))
                                 .executes(context -> {
                                     String name = StringArgumentType.getString(context, "player");
                                     return addExperience(context.getSource(), findPlayer(context.getSource(), name),
                                             IntegerArgumentType.getInteger(context, "amount"), name);
                                 })))
-                .then(CommandManager.literal("rm")
-                        .then(CommandManager.argument("amount", IntegerArgumentType.integer(0))
+                .then(Commands.literal("rm")
+                        .then(Commands.argument("amount", IntegerArgumentType.integer(0))
                                 .executes(context -> {
                                     String name = StringArgumentType.getString(context, "player");
                                     return removeExperience(context.getSource(), findPlayer(context.getSource(), name),
@@ -155,22 +155,22 @@ public final class PlayerStatusCommand {
                                 })));
     }
 
-    private int showHealth(ServerCommandSource source, ServerPlayerEntity player, String name) {
+    private int showHealth(CommandSourceStack source, ServerPlayer player, String name) {
         if (!authorized(source)) {
             return deny(source);
         }
         if (player == null) {
             return unknownPlayer(source, name);
         }
-        source.sendFeedback(() -> Text.empty()
-                .append(Text.literal("♥ ").formatted(Formatting.RED, Formatting.BOLD))
+        source.sendSuccess(() -> Component.empty()
+                .append(Component.literal("♥ ").withStyle(ChatFormatting.RED, ChatFormatting.BOLD))
                 .append(playerName(player))
-                .append(Text.literal("  HP  ").formatted(Formatting.GRAY))
+                .append(Component.literal("  HP  ").withStyle(ChatFormatting.GRAY))
                 .append(healthValue(player.getHealth(), player.getMaxHealth())), false);
         return 1;
     }
 
-    private int addHealth(ServerCommandSource source, ServerPlayerEntity player, double amount, String name) {
+    private int addHealth(CommandSourceStack source, ServerPlayer player, double amount, String name) {
         if (!authorized(source)) {
             return deny(source);
         }
@@ -180,56 +180,56 @@ public final class PlayerStatusCommand {
         float current = player.getHealth();
         float next = Math.min(player.getMaxHealth(), current + (float) amount);
         player.setHealth(next);
-        source.sendFeedback(() -> Text.empty()
+        source.sendSuccess(() -> Component.empty()
                 .append(successPrefix())
                 .append(playerName(player))
-                .append(Text.literal("  HP alterado para ").formatted(Formatting.GREEN))
+                .append(Component.literal("  HP alterado para ").withStyle(ChatFormatting.GREEN))
                 .append(healthValue(next, player.getMaxHealth())), true);
         return 1;
     }
 
-    private int lockHealth(ServerCommandSource source, ServerPlayerEntity player, String name) {
+    private int lockHealth(CommandSourceStack source, ServerPlayer player, String name) {
         if (!authorized(source)) {
             return deny(source);
         }
         if (player == null) {
             if (name.equals("self")) {
-                source.sendError(error("Este formato precisa ser executado por um jogador."));
+                source.sendFailure(error("Este formato precisa ser executado por um jogador."));
                 return 0;
             }
             return unknownPlayer(source, name);
         }
         float lockedHealth = Math.max(1.0f, Math.min(player.getMaxHealth(), player.getHealth()));
-        healthLockService.lock(player.getUuid(), lockedHealth);
+        healthLockService.lock(player.getUUID(), lockedHealth);
         player.setHealth(lockedHealth);
-        source.sendFeedback(() -> Text.empty()
+        source.sendSuccess(() -> Component.empty()
                 .append(warningPrefix())
                 .append(playerName(player))
-                .append(Text.literal("  HP travado em ").formatted(Formatting.YELLOW))
-                .append(Text.literal(format(lockedHealth)).formatted(Formatting.RED, Formatting.BOLD)), true);
+                .append(Component.literal("  HP travado em ").withStyle(ChatFormatting.YELLOW))
+                .append(Component.literal(format(lockedHealth)).withStyle(ChatFormatting.RED, ChatFormatting.BOLD)), true);
         return 1;
     }
 
-    private int unlockHealth(ServerCommandSource source, ServerPlayerEntity player, String name) {
+    private int unlockHealth(CommandSourceStack source, ServerPlayer player, String name) {
         if (!authorized(source)) {
             return deny(source);
         }
         if (player == null) {
             if (name.equals("self")) {
-                source.sendError(error("Este formato precisa ser executado por um jogador."));
+                source.sendFailure(error("Este formato precisa ser executado por um jogador."));
                 return 0;
             }
             return unknownPlayer(source, name);
         }
-        healthLockService.unlock(player.getUuid());
-        source.sendFeedback(() -> Text.empty()
+        healthLockService.unlock(player.getUUID());
+        source.sendSuccess(() -> Component.empty()
                 .append(successPrefix())
                 .append(playerName(player))
-                .append(Text.literal("  HP destravado.").formatted(Formatting.GREEN)), true);
+                .append(Component.literal("  HP destravado.").withStyle(ChatFormatting.GREEN)), true);
         return 1;
     }
 
-    private int removeHealth(ServerCommandSource source, ServerPlayerEntity player, double amount, String name) {
+    private int removeHealth(CommandSourceStack source, ServerPlayer player, double amount, String name) {
         if (!authorized(source)) {
             return deny(source);
         }
@@ -239,189 +239,189 @@ public final class PlayerStatusCommand {
         float current = player.getHealth();
         float next = Math.max(1.0f, current - (float) amount);
         player.setHealth(next);
-        source.sendFeedback(() -> Text.empty()
+        source.sendSuccess(() -> Component.empty()
                 .append(successPrefix())
                 .append(playerName(player))
-                .append(Text.literal("  HP alterado para ").formatted(Formatting.GREEN))
+                .append(Component.literal("  HP alterado para ").withStyle(ChatFormatting.GREEN))
                 .append(healthValue(next, player.getMaxHealth())), true);
         return 1;
     }
 
-    private int showExperience(ServerCommandSource source, ServerPlayerEntity player, String name) {
+    private int showExperience(CommandSourceStack source, ServerPlayer player, String name) {
         if (!authorized(source)) {
             return deny(source);
         }
         if (player == null) {
             return unknownPlayer(source, name);
         }
-        source.sendFeedback(() -> Text.empty()
-                .append(Text.literal("✦ ").formatted(Formatting.GREEN, Formatting.BOLD))
+        source.sendSuccess(() -> Component.empty()
+                .append(Component.literal("✦ ").withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD))
                 .append(playerName(player))
-                .append(Text.literal("  XP  ").formatted(Formatting.GRAY))
-                .append(Text.literal(Integer.toString(player.totalExperience)).formatted(Formatting.GREEN, Formatting.BOLD))
-                .append(Text.literal(" pontos  ·  nível ").formatted(Formatting.GRAY))
-                .append(Text.literal(Integer.toString(player.experienceLevel)).formatted(Formatting.GOLD, Formatting.BOLD)), false);
+                .append(Component.literal("  XP  ").withStyle(ChatFormatting.GRAY))
+                .append(Component.literal(Integer.toString(player.totalExperience)).withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD))
+                .append(Component.literal(" pontos  ·  nível ").withStyle(ChatFormatting.GRAY))
+                .append(Component.literal(Integer.toString(player.experienceLevel)).withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD)), false);
         return 1;
     }
 
-    private int addExperience(ServerCommandSource source, ServerPlayerEntity player, int amount, String name) {
+    private int addExperience(CommandSourceStack source, ServerPlayer player, int amount, String name) {
         if (!authorized(source)) {
             return deny(source);
         }
         if (player == null) {
             return unknownPlayer(source, name);
         }
-        player.addExperience(amount);
-        source.sendFeedback(() -> Text.empty()
+        player.giveExperiencePoints(amount);
+        source.sendSuccess(() -> Component.empty()
                 .append(successPrefix())
-                .append(Text.literal("+" + amount + " XP").formatted(Formatting.GREEN, Formatting.BOLD))
-                .append(Text.literal(" para ").formatted(Formatting.GREEN))
+                .append(Component.literal("+" + amount + " XP").withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD))
+                .append(Component.literal(" para ").withStyle(ChatFormatting.GREEN))
                 .append(playerName(player))
-                .append(Text.literal("  ·  Total ").formatted(Formatting.GRAY))
-                .append(Text.literal(Integer.toString(player.totalExperience)).formatted(Formatting.GREEN, Formatting.BOLD)), true);
+                .append(Component.literal("  ·  Total ").withStyle(ChatFormatting.GRAY))
+                .append(Component.literal(Integer.toString(player.totalExperience)).withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD)), true);
         return 1;
     }
 
-    private int removeExperience(ServerCommandSource source, ServerPlayerEntity player, int amount, String name) {
+    private int removeExperience(CommandSourceStack source, ServerPlayer player, int amount, String name) {
         if (!authorized(source)) {
             return deny(source);
         }
         if (player == null) {
             return unknownPlayer(source, name);
         }
-        player.addExperience(-amount);
-        source.sendFeedback(() -> Text.empty()
+        player.giveExperiencePoints(-amount);
+        source.sendSuccess(() -> Component.empty()
                 .append(successPrefix())
-                .append(Text.literal("−" + amount + " XP").formatted(Formatting.YELLOW, Formatting.BOLD))
-                .append(Text.literal(" de ").formatted(Formatting.GREEN))
+                .append(Component.literal("−" + amount + " XP").withStyle(ChatFormatting.YELLOW, ChatFormatting.BOLD))
+                .append(Component.literal(" de ").withStyle(ChatFormatting.GREEN))
                 .append(playerName(player))
-                .append(Text.literal("  ·  Total ").formatted(Formatting.GRAY))
-                .append(Text.literal(Integer.toString(player.totalExperience)).formatted(Formatting.GREEN, Formatting.BOLD)), true);
+                .append(Component.literal("  ·  Total ").withStyle(ChatFormatting.GRAY))
+                .append(Component.literal(Integer.toString(player.totalExperience)).withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD)), true);
         return 1;
     }
 
-    private int killPlayer(ServerCommandSource source, String name) {
+    private int killPlayer(CommandSourceStack source, String name) {
         if (!authorized(source)) {
             return deny(source);
         }
-        ServerPlayerEntity player = findPlayer(source, name);
+        ServerPlayer player = findPlayer(source, name);
         if (player == null) {
             return unknownPlayer(source, name);
         }
-        healthLockService.unlock(player.getUuid());
-        player.sendMessage(Text.literal("Admin matou você, seu boboca 😈")
-                .formatted(Formatting.DARK_RED, Formatting.BOLD), false);
-        player.kill();
-        source.sendFeedback(() -> Text.empty()
-                .append(Text.literal("☠ ").formatted(Formatting.RED, Formatting.BOLD))
+        healthLockService.unlock(player.getUUID());
+        player.sendSystemMessage(Component.literal("Admin matou você, seu boboca 😈")
+                .withStyle(ChatFormatting.DARK_RED, ChatFormatting.BOLD), false);
+        player.kill(player.level());
+        source.sendSuccess(() -> Component.empty()
+                .append(Component.literal("☠ ").withStyle(ChatFormatting.RED, ChatFormatting.BOLD))
                 .append(playerName(player))
-                .append(Text.literal(" foi morto.").formatted(Formatting.RED)), true);
+                .append(Component.literal(" foi morto.").withStyle(ChatFormatting.RED)), true);
         return 1;
     }
 
-    private ServerPlayerEntity findPlayer(ServerCommandSource source, String name) {
+    private ServerPlayer findPlayer(CommandSourceStack source, String name) {
         if (name.equalsIgnoreCase("self")) {
             return source.getPlayer();
         }
-        return source.getServer().getPlayerManager().getPlayer(name);
+        return source.getServer().getPlayerList().getPlayerByName(name);
     }
 
-    private boolean authorized(ServerCommandSource source) {
+    private boolean authorized(CommandSourceStack source) {
         return source.getEntity() == null
-                || source.getEntity() instanceof ServerPlayerEntity player
-                && authorizationService.isAdministrator(player.getUuid());
+                || source.getEntity() instanceof ServerPlayer player
+                && authorizationService.isAdministrator(player.getUUID());
     }
 
-    private int deny(ServerCommandSource source) {
-        source.sendError(error("Você não tem autorização Umbrellaz para usar este comando."));
+    private int deny(CommandSourceStack source) {
+        source.sendFailure(error("Você não tem autorização Umbrellaz para usar este comando."));
         return 0;
     }
 
-    private int unknownPlayer(ServerCommandSource source, String name) {
-        source.sendError(Text.empty()
+    private int unknownPlayer(CommandSourceStack source, String name) {
+        source.sendFailure(Component.empty()
                 .append(errorPrefix())
-                .append(Text.literal("Jogador online não encontrado: ").formatted(Formatting.RED))
+                .append(Component.literal("Jogador online não encontrado: ").withStyle(ChatFormatting.RED))
                 .append(playerName(name)));
         return 0;
     }
 
-    private int healthHelp(ServerCommandSource source) {
-        source.sendFeedback(() -> header("HP · administradores"), false);
-        source.sendFeedback(() -> helpLine("/uz hp <jogador>", "Mostra o HP atual e máximo"), false);
-        source.sendFeedback(() -> helpLine("/uz hp <jogador> add <pontos>", "Adiciona HP até o máximo"), false);
-        source.sendFeedback(() -> helpLine("/uz hp <jogador> rm <pontos>", "Remove HP sem chegar abaixo de 1"), false);
-        source.sendFeedback(() -> helpLine("/uz hp <jogador> lock", "Trava o HP atual"), false);
-        source.sendFeedback(() -> helpLine("/uz hp <jogador> unlock", "Destrava o HP"), false);
-        source.sendFeedback(() -> selfHint(), false);
+    private int healthHelp(CommandSourceStack source) {
+        source.sendSuccess(() -> header("HP · administradores"), false);
+        source.sendSuccess(() -> helpLine("/uz hp <jogador>", "Mostra o HP atual e máximo"), false);
+        source.sendSuccess(() -> helpLine("/uz hp <jogador> add <pontos>", "Adiciona HP até o máximo"), false);
+        source.sendSuccess(() -> helpLine("/uz hp <jogador> rm <pontos>", "Remove HP sem chegar abaixo de 1"), false);
+        source.sendSuccess(() -> helpLine("/uz hp <jogador> lock", "Trava o HP atual"), false);
+        source.sendSuccess(() -> helpLine("/uz hp <jogador> unlock", "Destrava o HP"), false);
+        source.sendSuccess(() -> selfHint(), false);
         return 1;
     }
 
-    private int experienceHelp(ServerCommandSource source) {
-        source.sendFeedback(() -> header("XP · administradores"), false);
-        source.sendFeedback(() -> helpLine("/uz xp <jogador>", "Mostra os pontos totais e o nível"), false);
-        source.sendFeedback(() -> helpLine("/uz xp <jogador> add <pontos>", "Adiciona pontos de XP"), false);
-        source.sendFeedback(() -> helpLine("/uz xp <jogador> rm <pontos>", "Remove pontos de XP"), false);
-        source.sendFeedback(() -> selfHint(), false);
+    private int experienceHelp(CommandSourceStack source) {
+        source.sendSuccess(() -> header("XP · administradores"), false);
+        source.sendSuccess(() -> helpLine("/uz xp <jogador>", "Mostra os pontos totais e o nível"), false);
+        source.sendSuccess(() -> helpLine("/uz xp <jogador> add <pontos>", "Adiciona pontos de XP"), false);
+        source.sendSuccess(() -> helpLine("/uz xp <jogador> rm <pontos>", "Remove pontos de XP"), false);
+        source.sendSuccess(() -> selfHint(), false);
         return 1;
     }
 
-    private int killHelp(ServerCommandSource source) {
-        source.sendFeedback(() -> header("Kill · administradores"), false);
-        source.sendFeedback(() -> helpLine("/uz kill <jogador>", "Mata um jogador e envia uma mensagem"), false);
+    private int killHelp(CommandSourceStack source) {
+        source.sendSuccess(() -> header("Kill · administradores"), false);
+        source.sendSuccess(() -> helpLine("/uz kill <jogador>", "Mata um jogador e envia uma mensagem"), false);
         return 1;
     }
 
-    private Text header(String section) {
-        return Text.empty()
-                .append(Text.literal("◆ UMBRELLAZ").formatted(Formatting.GOLD, Formatting.BOLD))
-                .append(Text.literal("  " + section).formatted(Formatting.YELLOW));
+    private Component header(String section) {
+        return Component.empty()
+                .append(Component.literal("◆ UMBRELLAZ").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD))
+                .append(Component.literal("  " + section).withStyle(ChatFormatting.YELLOW));
     }
 
-    private Text helpLine(String command, String description) {
-        return Text.empty()
-                .append(Text.literal("  " + command).formatted(Formatting.YELLOW))
-                .append(Text.literal("  —  " + description).formatted(Formatting.GRAY));
+    private Component helpLine(String command, String description) {
+        return Component.empty()
+                .append(Component.literal("  " + command).withStyle(ChatFormatting.YELLOW))
+                .append(Component.literal("  —  " + description).withStyle(ChatFormatting.GRAY));
     }
 
-    private Text selfHint() {
-        return Text.empty()
-                .append(Text.literal("  Dica  ").formatted(Formatting.DARK_GRAY, Formatting.BOLD))
-                .append(Text.literal("Use ").formatted(Formatting.GRAY))
-                .append(Text.literal("self").formatted(Formatting.AQUA, Formatting.BOLD))
-                .append(Text.literal(" no lugar de <jogador> para operar sobre si mesmo.").formatted(Formatting.GRAY));
+    private Component selfHint() {
+        return Component.empty()
+                .append(Component.literal("  Dica  ").withStyle(ChatFormatting.DARK_GRAY, ChatFormatting.BOLD))
+                .append(Component.literal("Use ").withStyle(ChatFormatting.GRAY))
+                .append(Component.literal("self").withStyle(ChatFormatting.AQUA, ChatFormatting.BOLD))
+                .append(Component.literal(" no lugar de <jogador> para operar sobre si mesmo.").withStyle(ChatFormatting.GRAY));
     }
 
-    private Text playerName(ServerPlayerEntity player) {
+    private Component playerName(ServerPlayer player) {
         return playerName(player.getName().getString());
     }
 
-    private Text playerName(String name) {
-        return Text.literal(name).formatted(Formatting.AQUA, Formatting.BOLD);
+    private Component playerName(String name) {
+        return Component.literal(name).withStyle(ChatFormatting.AQUA, ChatFormatting.BOLD);
     }
 
-    private Text healthValue(float current, float maximum) {
-        return Text.empty()
-                .append(Text.literal(format(current)).formatted(Formatting.RED, Formatting.BOLD))
-                .append(Text.literal(" / ").formatted(Formatting.DARK_GRAY))
-                .append(Text.literal(format(maximum)).formatted(Formatting.RED));
+    private Component healthValue(float current, float maximum) {
+        return Component.empty()
+                .append(Component.literal(format(current)).withStyle(ChatFormatting.RED, ChatFormatting.BOLD))
+                .append(Component.literal(" / ").withStyle(ChatFormatting.DARK_GRAY))
+                .append(Component.literal(format(maximum)).withStyle(ChatFormatting.RED));
     }
 
-    private Text successPrefix() {
-        return Text.literal("✓ ").formatted(Formatting.GREEN, Formatting.BOLD);
+    private Component successPrefix() {
+        return Component.literal("✓ ").withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD);
     }
 
-    private Text warningPrefix() {
-        return Text.literal("⚠ ").formatted(Formatting.YELLOW, Formatting.BOLD);
+    private Component warningPrefix() {
+        return Component.literal("⚠ ").withStyle(ChatFormatting.YELLOW, ChatFormatting.BOLD);
     }
 
-    private Text errorPrefix() {
-        return Text.literal("✕ ").formatted(Formatting.RED, Formatting.BOLD);
+    private Component errorPrefix() {
+        return Component.literal("✕ ").withStyle(ChatFormatting.RED, ChatFormatting.BOLD);
     }
 
-    private Text error(String message) {
-        return Text.empty()
+    private Component error(String message) {
+        return Component.empty()
                 .append(errorPrefix())
-                .append(Text.literal(message).formatted(Formatting.RED));
+                .append(Component.literal(message).withStyle(ChatFormatting.RED));
     }
 
     private String format(float value) {

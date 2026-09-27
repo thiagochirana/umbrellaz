@@ -63,11 +63,17 @@ public final class WhitelistRepository {
 
     public List<WhitelistEntry> findAll() {
         return database.withConnection(connection -> {
-            try (PreparedStatement statement = connection.prepareStatement("SELECT player_uuid, created_at, created_by FROM whitelist ORDER BY created_at");
-                 ResultSet resultSet = statement.executeQuery()) {
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT w.player_uuid, p.username, w.created_at, w.created_by "
+                            + "FROM whitelist w LEFT JOIN players p ON p.uuid = w.player_uuid ORDER BY w.created_at");
+                  ResultSet resultSet = statement.executeQuery()) {
                 List<WhitelistEntry> entries = new java.util.ArrayList<>();
                 while (resultSet.next()) {
-                    entries.add(new WhitelistEntry(UUID.fromString(resultSet.getString(1)), Instant.parse(resultSet.getString(2)), resultSet.getString(3)));
+                    entries.add(new WhitelistEntry(
+                            UUID.fromString(resultSet.getString("player_uuid")),
+                            resultSet.getString("username"),
+                            Instant.parse(resultSet.getString("created_at")),
+                            resultSet.getString("created_by")));
                 }
                 return entries;
             } catch (SQLException exception) {

@@ -21,9 +21,9 @@ Umbrellaz should behave like a modular Java application embedded in Fabric rathe
 Current baseline:
 
 ```text
-Minecraft: 1.21.1
+Minecraft: 26.3
 Platform: Fabric
-Java: 21
+Java: 25
 Build: Gradle Kotlin DSL
 Database: SQLite
 Database access: JDBC
@@ -161,7 +161,7 @@ dev.chirana.umbrellaz.infra.db.sqlite
 
 # Java Style
 
-Use Java 21 features where they improve clarity.
+Use Java 25 features where they improve clarity.
 
 Suitable examples include:
 
@@ -232,6 +232,12 @@ A command should:
 3. check administrative access through the authorization abstraction
 4. call an application service
 5. format the result
+
+The current command policy rejects every player-originated command from a
+non-administrator, including an authenticated non-administrator. Umbrellaz
+command adapters still perform their own administrator check. Any future
+exception must be introduced through the authorization abstraction; it must
+not weaken the current fail-closed behavior.
 
 Example:
 

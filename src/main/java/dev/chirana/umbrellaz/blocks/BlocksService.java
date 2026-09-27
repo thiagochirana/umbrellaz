@@ -1,37 +1,28 @@
 package dev.chirana.umbrellaz.blocks;
 
-import net.minecraft.block.Block;
-import net.minecraft.block.BlockState;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.registry.RegistryKeys;
-import net.minecraft.registry.tag.BlockTags;
-import net.minecraft.registry.tag.TagKey;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
-import net.minecraft.world.World;
-
 import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Predicate;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.TagKey;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
 
 public final class BlocksService {
-    private static final TagKey<Block> MINECRAFT_ORES = TagKey.of(RegistryKeys.BLOCK, Identifier.ofVanilla("ores"));
     private static final Set<TagKey<Block>> VANILLA_ORE_TAGS = Set.of(
-            MINECRAFT_ORES,
-            BlockTags.COAL_ORES,
+            BlockTags.ORES,
             BlockTags.COPPER_ORES,
-            BlockTags.DIAMOND_ORES,
-            BlockTags.EMERALD_ORES,
             BlockTags.GOLD_ORES,
-            BlockTags.IRON_ORES,
-            BlockTags.LAPIS_ORES,
-            BlockTags.REDSTONE_ORES
+            BlockTags.IRON_ORES
     );
 
     private final BlocksRuntimeState runtimeState;
@@ -61,17 +52,17 @@ public final class BlocksService {
         runtimeState.setOresEzBreakEnabled(enabled);
     }
 
-    public void afterSuccessfulBreak(World world, PlayerEntity player, BlockPos position, BlockState brokenState) {
-        if (!(world instanceof ServerWorld serverWorld) || !(player instanceof ServerPlayerEntity serverPlayer)) {
+    public void afterSuccessfulBreak(Level world, Player player, BlockPos position, BlockState brokenState) {
+        if (!(world instanceof ServerLevel serverWorld) || !(player instanceof ServerPlayer serverPlayer)) {
             return;
         }
-        UUID playerUuid = serverPlayer.getUuid();
+        UUID playerUuid = serverPlayer.getUUID();
         if (!processingPlayers.add(playerUuid)) {
             return;
         }
         try {
             if (treeEzBreakEnabled() && isTreeLog(brokenState)) {
-                breakConnected(serverWorld, serverPlayer, position, state -> state.isIn(BlockTags.LOGS));
+                breakConnected(serverWorld, serverPlayer, position, state -> state.is(BlockTags.LOGS));
             } else if (oresEzBreakEnabled() && isOre(brokenState)) {
                 Block oreType = brokenState.getBlock();
                 breakConnected(serverWorld, serverPlayer, position,
@@ -83,34 +74,34 @@ public final class BlocksService {
     }
 
     static boolean isTreeLog(BlockState state) {
-        return state.isIn(BlockTags.LOGS);
+        return state.is(BlockTags.LOGS);
     }
 
     static boolean isOre(BlockState state) {
-        return VANILLA_ORE_TAGS.stream().anyMatch(state::isIn);
+        return VANILLA_ORE_TAGS.stream().anyMatch(state::is);
     }
 
-    private void breakConnected(ServerWorld world, ServerPlayerEntity player, BlockPos origin,
+    private void breakConnected(ServerLevel world, ServerPlayer player, BlockPos origin,
                                 Predicate<BlockState> accepted) {
         List<BlockPos> positions = connectedPositions(world, origin, accepted);
         for (BlockPos position : positions) {
             if (accepted.test(world.getBlockState(position))) {
-                player.interactionManager.tryBreakBlock(position);
+                player.gameMode.destroyBlock(position);
             }
         }
     }
 
-    private List<BlockPos> connectedPositions(ServerWorld world, BlockPos origin,
+    private List<BlockPos> connectedPositions(ServerLevel world, BlockPos origin,
                                               Predicate<BlockState> accepted) {
         ArrayDeque<BlockPos> queue = new ArrayDeque<>();
         Set<BlockPos> visited = new HashSet<>();
         List<BlockPos> positions = new java.util.ArrayList<>();
-        visited.add(origin.toImmutable());
+        visited.add(origin.immutable());
         for (Direction direction : Direction.values()) {
-            queue.add(origin.offset(direction));
+            queue.add(origin.relative(direction));
         }
         while (!queue.isEmpty()) {
-            BlockPos position = queue.removeFirst().toImmutable();
+            BlockPos position = queue.removeFirst().immutable();
             if (!visited.add(position)) {
                 continue;
             }
@@ -120,7 +111,7 @@ public final class BlocksService {
             }
             positions.add(position);
             for (Direction direction : Direction.values()) {
-                queue.add(position.offset(direction));
+                queue.add(position.relative(direction));
             }
         }
         return positions;

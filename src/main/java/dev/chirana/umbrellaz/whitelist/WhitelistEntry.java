@@ -3,5 +3,5 @@ package dev.chirana.umbrellaz.whitelist;
 import java.time.Instant;
 import java.util.UUID;
 
-public record WhitelistEntry(UUID playerUuid, Instant createdAt, String createdBy) {
+public record WhitelistEntry(UUID playerUuid, String username, Instant createdAt, String createdBy) {
 }

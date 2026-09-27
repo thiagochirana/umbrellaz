@@ -3,11 +3,11 @@ import org.gradle.jvm.tasks.Jar
 
 plugins {
     java
-    id("net.fabricmc.fabric-loom-remap") version "1.17.21"
+    id("net.fabricmc.fabric-loom") version "1.17.21"
 }
 
 group = "dev.chirana"
-version = "0.4.0"
+version = "1.0.0"
 
 base {
     archivesName = "umbrellaz"
@@ -18,11 +18,10 @@ repositories {
 }
 
 dependencies {
-    minecraft("com.mojang:minecraft:1.21.1")
-    mappings("net.fabricmc:yarn:1.21.1+build.3:v2")
+    minecraft("com.mojang:minecraft:26.3")
 
-    modImplementation("net.fabricmc:fabric-loader:0.16.14")
-    modImplementation("net.fabricmc.fabric-api:fabric-api:0.116.15+1.21.1")
+    implementation("net.fabricmc:fabric-loader:0.19.5")
+    implementation("net.fabricmc.fabric-api:fabric-api:0.161.0+26.3")
 
     include(implementation("org.xerial:sqlite-jdbc:3.53.4.0")!!)
 
@@ -33,14 +32,14 @@ dependencies {
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
     }
 
     withSourcesJar()
 }
 
 tasks.withType<JavaCompile>().configureEach {
-    options.release = 21
+    options.release = 25
     options.encoding = "UTF-8"
 }
 
@@ -56,7 +55,7 @@ tasks.test {
     useJUnitPlatform()
 }
 
-val releaseArtifact = tasks.named<Jar>("remapJar").flatMap { it.archiveFile }
+val releaseArtifact = tasks.named<Jar>("jar").flatMap { it.archiveFile }
 val releaseTag = providers.gradleProperty("releaseTag")
     .orElse(providers.provider { "v${project.version}" })
 

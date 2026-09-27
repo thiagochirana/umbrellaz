@@ -80,9 +80,9 @@ Do not preserve an existing pattern only because it already exists if it violate
 
 Assume the following unless explicitly changed:
 
-- Minecraft Java 1.21.1
+- Minecraft Java 26.3
 - Fabric
-- Java 21
+- Java 25
 - Gradle Kotlin DSL
 - SQLite
 - SQLite JDBC
