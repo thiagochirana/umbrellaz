@@ -53,7 +53,7 @@ class AuthorizationPersistenceTest {
                 throw new IllegalStateException(exception);
             }
         });
-        assertEquals(5, migrationCount);
+        assertEquals(new MigrationLoader().load().size(), migrationCount);
 
         PlayerService playerService = new PlayerService(new PlayerRepository(database), databaseExecutor);
         WhitelistService whitelistService = new WhitelistService(new WhitelistRepository(database), playerService, databaseExecutor, new WhitelistCache());

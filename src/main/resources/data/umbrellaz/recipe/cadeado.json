@@ -1,0 +1,25 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": [
+    "minecraft:copper_ingot"
+  ],
+  "result": {
+    "id": "minecraft:tripwire_hook",
+    "count": 1,
+    "components": {
+      "minecraft:custom_data": {
+        "umbrellaz:lock_item": true,
+        "umbrellaz:lock_item_version": 1
+      },
+      "minecraft:custom_model_data": {
+        "floats": [1.0],
+        "flags": [],
+        "strings": [],
+        "colors": []
+      },
+      "minecraft:custom_name": {
+        "text": "Cadeado"
+      }
+    }
+  }
+}

@@ -22,6 +22,14 @@ import dev.chirana.umbrellaz.player.AliasCache;
 import dev.chirana.umbrellaz.player.UserCommand;
 import dev.chirana.umbrellaz.player.OnlinePlayerResolver;
 import dev.chirana.umbrellaz.player.OnlinePlayerSuggestions;
+import dev.chirana.umbrellaz.lock.AttemptLimiter;
+import dev.chirana.umbrellaz.lock.LockCache;
+import dev.chirana.umbrellaz.lock.LockEvents;
+import dev.chirana.umbrellaz.lock.LockPlacementPolicy;
+import dev.chirana.umbrellaz.lock.LockRepository;
+import dev.chirana.umbrellaz.lock.LockService;
+import dev.chirana.umbrellaz.lock.PasswordKdf;
+import dev.chirana.umbrellaz.lock.PasswordPolicy;
 import dev.chirana.umbrellaz.whitelist.WhitelistCache;
 import dev.chirana.umbrellaz.whitelist.WhitelistCommand;
 import dev.chirana.umbrellaz.whitelist.WhitelistRepository;
@@ -61,6 +69,12 @@ public final class Umbrellaz implements ModInitializer {
         AuthService authService = new AuthService(playerService, whitelistService);
         AdministratorRepository administratorRepository = new AdministratorRepository(database);
         AuthorizationService authorizationService = new AuthorizationService(administratorRepository, databaseExecutor);
+        LockRepository lockRepository = new LockRepository(database);
+        LockCache lockCache = new LockCache();
+        LockService lockService = new LockService(new PasswordPolicy(), new PasswordKdf(),
+                new LockPlacementPolicy(), new AttemptLimiter(), lockCache);
+        AuthEvents.register(authService, authorizationService, config);
+        LockEvents.register(lockService, lockRepository, databaseExecutor, authorizationService);
         UmbrellazReloadService reloadService = new UmbrellazReloadService(
                 playerService, whitelistService, authorizationService);
 
@@ -70,6 +84,9 @@ public final class Umbrellaz implements ModInitializer {
         })).thenCompose(ignored -> playerService.loadAliasCache())
                 .thenCompose(ignored -> whitelistService.loadCache())
                 .thenCompose(ignored -> authorizationService.loadCache())
+                .thenCompose(ignored -> LockEvents.loadPlacementSnapshot())
+                .thenCompose(ignored -> lockService.loadCache(lockRepository, databaseExecutor))
+                .thenRun(LockEvents::reconcileMarkers)
                 .whenComplete((ignored, throwable) -> {
             if (throwable != null) {
                 LOGGER.error("Umbrellaz database initialization failed; authorization remains blocked", throwable);
@@ -106,8 +123,11 @@ public final class Umbrellaz implements ModInitializer {
             playerStatusCommand.register(dispatcher);
             reloadCommand.register(dispatcher);
         });
-        AuthEvents.register(authService, authorizationService, config);
-        ServerLifecycleEvents.SERVER_STOPPING.register(server -> databaseExecutor.close());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
+            LockEvents.shutdown(server);
+            lockService.close();
+            databaseExecutor.close();
+        });
         LOGGER.info("Umbrellaz initialized");
     }
 }

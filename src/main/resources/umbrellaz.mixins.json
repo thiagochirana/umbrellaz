@@ -8,7 +8,11 @@
     "ServerCommandSourceMixin",
     "CommandSourceStackAccessor",
     "LivingEntityMixin",
-    "BlockItemMixin"
+    "BlockItemMixin",
+    "ServerExplosionMixin",
+    "PistonStructureResolverMixin",
+    "FireBlockMixin",
+    "FlowingFluidMixin"
   ],
   "injectors": {
     "defaultRequire": 1

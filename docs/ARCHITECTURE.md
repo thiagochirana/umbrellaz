@@ -80,6 +80,13 @@ src/main/java/dev/chirana/umbrellaz/
 │   ├── Player.java
 │   ├── PlayerRepository.java
 │   └── PlayerService.java
+
+├── lock/
+│   ├── LockService.java
+│   ├── LockRepository.java
+│   ├── LockCache.java
+│   ├── PlacementProvenance.java
+│   └── PasswordKdf.java
 │
 ├── command/
 │   ├── CommandModule.java
@@ -540,6 +547,12 @@ UUID may be stored using a consistent textual representation initially.
 
 Do not use username as a foreign key.
 
+The feature-first `lock` module persists `lockers`, `locker_members`, and
+`lock_placements`. A placement has a world, dimension, block position, UUID
+generation, installer UUID, and expected block type. Locker members retain that
+generation and expected provenance, so a replacement block cannot inherit a
+previous lock. Locker owners remain UUID foreign keys to `players.uuid`.
+
 ---
 
 # Migrations
@@ -574,6 +587,99 @@ Repositories must assume the expected schema already exists.
 ---
 
 # Cache Architecture
+
+Lock state follows a fail-closed lifecycle:
+
+```text
+DatabaseExecutor
+      ↓
+complete locker snapshot
+      ↓
+atomic LockCache publication
+      ↓
+ready hot-path lookup
+```
+
+The lock cache is explicitly not-ready before loading and remains not-ready if
+database loading, row mapping, or duplicate-target validation fails. A lock
+adapter must distinguish not-ready from an unlocked target and must never query
+SQLite on the hot path.
+
+Lock password verification and password creation use the lock service's bounded
+KDF executor. The executor is owned by the service in the default composition,
+is shut down with the service, and returns an explicit busy result (or failed
+future for password creation) when saturated. KDF work must never run on the
+Minecraft/server thread. After an asynchronous result requires Minecraft state
+changes, the adapter must hand off with `server.execute(...)`.
+
+An explicit password confirmation records at most three consecutive failures
+for a player and locker, then applies a 30-second monotonic cooldown. Cooldown
+state survives disconnect and is cleared only by successful confirmation or
+server restart. A successful password confirmation grants that player OPEN,
+BREAK, and REMOVE access until disconnect; there is no global unlocked state.
+
+Lock placement provenance is loaded into a dedicated in-memory snapshot through
+`DatabaseExecutor` during startup. The snapshot is not-ready until the load
+completes, so an unknown placement fails closed. Ordinary successful placements
+are persisted asynchronously and update only the affected lock-cache state;
+they do not reload every locker on the interaction path.
+
+World identity is a UUID stored in the world's `SavedDataStorage`, shared by
+all dimensions and combined with the dimension identifier for lock targets.
+There is no save-path or seed fallback: if the world-instance identity cannot
+be initialized, lock placement and interaction adapters fail closed.
+
+The vanilla Anvil adapter reserves one real marked lock item on the server
+thread before starting KDF work. A failed or stale asynchronous operation
+restores or drops exactly that item; a committed stale creation is compensated
+transactionally before restoration. Completion handlers resolve the active
+player session and use `server.execute(...)` before any menu, message,
+inventory, or world mutation. Menu contexts validate player session, level,
+target generations/topology, and conservative interaction range.
+
+The interaction adapter uses Minecraft's authoritative
+`isWithinBlockInteractionRange(..., 1.0D)` check. The second argument is
+vanilla's additional margin; the player's `blockInteractionRange()` is the
+authoritative base range and must not be passed as that margin. Every tracked
+storage break, including an unlocked or not-yet-persisted placement, first
+revalidates the session, generation, topology, and range on the server thread,
+reserves a generation-specific pending-break token, and attempts the physical
+destruction. Only a confirmed `destroyBlock == true` queues exact-generation
+invalidation on the single `DatabaseExecutor`. Failed or stale destruction
+leaves the database, cache, and placement tracker unchanged. After physical
+destruction, the token remains fail-closed until invalidation completes; an
+invalidation failure does not expose an unlocked target.
+
+Disconnect and server-stop paths cancel all pending item reservations before
+service shutdown. Reserved items are restored or dropped exactly once; any
+locker transaction already queued or committed is compensated through the
+still-open database executor without using a stale player reference.
+
+Normal sneak-right-click removal deletes only the logical locker and preserves
+all placement provenance. Actual block destruction invalidates the captured
+generation and logical locker in one transaction after the world mutation,
+preserves provenance for surviving members, and retains the pending token until
+that invalidation commits. Double-chest contexts are canonicalized across both
+horizontal members while retaining the clicked position for vanilla opening or destruction.
+Placement adapters reject a new chest merge with any cached locked member.
+
+Environmental protection is a hot-path lock adapter. Explosion, piston, fire,
+and fluid integrations consult the in-memory cache only; they never query
+SQLite. Supported storage positions fail closed while the world identity,
+placement snapshot, or lock cache is not ready. Hoppers and inventory
+automation are not intercepted. Marker entities are visual projections only:
+an `ItemDisplay` carries a marked `LockItem`, a namespaced marker tag, and the
+locker UUID, while the cache and SQLite remain authoritative. Marker
+reconciliation runs on server/world and loaded-chunk lifecycle callbacks and
+removes stale or duplicate projections.
+
+The required client/server resource pack is
+`build/libs/umbrellaz-resource-pack-<version>.zip`. It contains the modern
+26.3 item model selector and lock texture, and is built by the reproducible
+`resourcePackZip` task without being placed in the mod JAR. Operators must
+serve the ZIP from a reachable URL, configure the matching SHA-1, and set the
+required-resource-pack flag as appropriate for the server. Umbrellaz does not
+provide an HTTP server.
 
 Whitelist:
 
@@ -1002,7 +1108,12 @@ The GUI must never become an authorization source.
 
 All decisions remain server-side.
 
-No GUI implementation belongs in the current scope.
+The implemented first GUI adapter is a vanilla Anvil input flow for creating
+and submitting a lock password. It remains a Minecraft boundary adapter: it
+performs no SQL, does not become an authorization source, and calls the lock
+service's explicit password-confirmation operation. It is server-authoritative
+and rejects item movement, shift-click, drag, swap, and output duplication
+paths.
 
 ---
 

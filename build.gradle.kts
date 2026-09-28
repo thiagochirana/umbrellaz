@@ -1,5 +1,6 @@
 import java.io.File
 import org.gradle.jvm.tasks.Jar
+import org.gradle.api.tasks.bundling.Zip
 
 plugins {
     java
@@ -7,7 +8,7 @@ plugins {
 }
 
 group = "dev.chirana"
-version = "1.3.0"
+version = "1.4.0"
 
 base {
     archivesName = "umbrellaz"
@@ -45,6 +46,7 @@ tasks.withType<JavaCompile>().configureEach {
 
 tasks.processResources {
     inputs.property("version", project.version)
+    exclude("resourcepack/**")
 
     filesMatching("fabric.mod.json") {
         expand("version" to project.version)
@@ -53,6 +55,21 @@ tasks.processResources {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+val resourcePackZip = tasks.register<Zip>("resourcePackZip") {
+    group = "distribution"
+    description = "Builds the Umbrellaz client resource pack."
+    archiveFileName.set("umbrellaz-resource-pack-${project.version}.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("libs"))
+    from("src/main/resources/resourcepack")
+    includeEmptyDirs = false
+    isReproducibleFileOrder = true
+    isPreserveFileTimestamps = false
+}
+
+tasks.named("build") {
+    dependsOn(resourcePackZip)
 }
 
 val releaseArtifact = tasks.named<Jar>("jar").flatMap { it.archiveFile }
