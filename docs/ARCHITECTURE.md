@@ -504,16 +504,17 @@ Only the Minecraft server thread should perform authoritative world/player mutat
 The build delivers one universal Fabric mod JAR with common/server
 code, a split client source set, and separate `main` and `client` entrypoints.
 The exact Minecraft/Fabric compatibility declared by the artifact is required.
-For TLauncher, the matching universal JAR must be installed as the client mod
-in the client `mods` directory; a compatible Umbrellaz client mod is required.
-The server resource pack remains a separate server-provided asset and does not
-replace the client mod or the authenticated-session requirement.
+The same `umbrellaz-mod-<version>.jar` is installed as the mod in both client and
+server `mods` directories. It bundles the lock item model and texture, so no
+separate resource pack or resource-pack URL, SHA-1, or server configuration is
+required. For TLauncher, install the matching universal JAR in the client
+`mods` directory; the authenticated-session requirement remains unchanged.
 
 The Minecraft 26.3 lane uses Fabric Loom `net.fabricmc.fabric-loom` 1.17.21
 with the non-obfuscated runtime namespace; it does not use
 `officialMojangMappings()` or require a remapping task. `releaseArtifact` uses
-the normal production `jar` output; release depends on and builds that JAR plus
-the separate resource-pack ZIP.
+the normal production `jar` output; release depends on and builds, validates, and
+uploads only that universal JAR.
 
 GUI networking uses typed `CustomPacketPayload` and `StreamCodec` contracts.
 Every payload is versioned, bounded, and validated; codecs must reject
@@ -554,7 +555,7 @@ resolution, tokens, KDF work, persistence, item accounting, world mutation, and
 final results. JDBC remains behind `DatabaseExecutor`, and server state changes
 return to the server thread after asynchronous work.
 
-Custom client `Screen` and resource-pack assets are presentation adapters, not
+Custom client `Screen` and bundled item assets are presentation adapters, not
 the vanilla GUI flow. The current Anvil adapter remains only until lock
 migration; its existing server-authoritative reservation, cancellation,
 fail-closed behavior, password policy, and exact item accounting must be
@@ -572,8 +573,9 @@ classes/resources, mixin configuration, and the included SQLite dependency.
 The 26.3 non-obfuscated lane uses the runtime namespace directly; no remapping
 task is required.
 
-Phase 5 repeats release/artifact validation for the final universal JAR and
-separate resource-pack ZIP. It is not the first proof of packaging correctness.
+Phase 5 repeats release/artifact validation for the final universal JAR, including
+its client classes and bundled lock item assets. It is not the first proof of
+packaging correctness.
 
 ---
 
@@ -762,13 +764,10 @@ locker UUID, while the cache and SQLite remain authoritative. Marker
 reconciliation runs on server/world and loaded-chunk lifecycle callbacks and
 removes stale or duplicate projections.
 
-The required client/server resource pack is
-`build/libs/umbrellaz-resource-pack-<version>.zip`. It contains the modern
-26.3 item model selector and lock texture, and is built by the reproducible
-`resourcePackZip` task without being placed in the mod JAR. Operators must
-serve the ZIP from a reachable URL, configure the matching SHA-1, and set the
-required-resource-pack flag as appropriate for the server. Umbrellaz does not
-provide an HTTP server.
+The lock item's modern 26.3 model selector and texture are bundled at their
+normal `assets/` paths in the universal mod JAR. The same JAR is installed on
+the client and server, so Umbrellaz does not generate, require, serve, or
+configure a separate resource pack, URL, SHA-1, or required-resource-pack flag.
 
 Whitelist:
 
@@ -1200,7 +1199,7 @@ client may render only server-provided state and submit request input; it must
 not be trusted for button identifiers, target identity, permissions, password
 policy, or completion claims.
 
-The custom Screen and resource-pack assets are not a vanilla GUI fallback. The
+The custom Screen and bundled item assets are not a vanilla GUI fallback. The
 current vanilla Anvil input flow remains only until lock migration, and its
 server-authoritative behavior, item reservation/compensation, stale-operation
 handling, and rejection of movement, shift-click, drag, swap, and duplication

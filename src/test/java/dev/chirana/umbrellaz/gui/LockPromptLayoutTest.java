@@ -12,7 +12,12 @@ class LockPromptLayoutTest {
         LockPromptLayout layout = LockPromptLayout.calculate(960, 540);
 
         assertEquals(LockPromptLayout.Density.STANDARD, layout.density());
-        assertEquals(408, layout.panel().width());
+        assertEquals(new UiRect(320, 175, 320, 190), layout.panel());
+        assertEquals(new UiRect(340, 193, 280, 12), layout.title());
+        assertEquals(new UiRect(340, 227, 280, 36), layout.input());
+        assertEquals(new UiRect(340, 270, 280, 22), layout.message());
+        assertEquals(new UiRect(340, 327, 136, 26), layout.cancel());
+        assertEquals(new UiRect(484, 327, 136, 26), layout.submit());
         assertFalse(layout.belowMinimum());
         assertContained(layout.panel(), layout.input());
         assertContained(layout.panel(), layout.submit());
@@ -25,7 +30,8 @@ class LockPromptLayoutTest {
 
         assertEquals(LockPromptLayout.Density.COMPACT, layout.density());
         assertFalse(layout.belowMinimum());
-        assertTrue(layout.panel().width() <= 328);
+        assertEquals(new UiRect(20, 38, 280, 164), layout.panel());
+        assertTrue(layout.panel().width() <= 280);
         assertContained(layout.panel(), layout.message());
     }
 
@@ -39,12 +45,12 @@ class LockPromptLayoutTest {
         assertEquals(180, first.viewportHeight());
         assertEquals(LockPromptLayout.Density.COMPACT, first.density());
         assertFalse(first.belowMinimum());
-        assertEquals(new UiRect(6, 6, 228, 168), first.panel());
-        assertEquals(new UiRect(20, 29, 200, 20), first.title());
-        assertEquals(new UiRect(20, 64, 200, 36), first.input());
-        assertEquals(new UiRect(20, 105, 200, 24), first.message());
-        assertEquals(new UiRect(20, 142, 96, 24), first.cancel());
-        assertEquals(new UiRect(124, 142, 96, 24), first.submit());
+        assertEquals(new UiRect(6, 8, 228, 164), first.panel());
+        assertEquals(new UiRect(18, 23, 204, 12), first.title());
+        assertEquals(new UiRect(18, 55, 204, 34), first.input());
+        assertEquals(new UiRect(18, 94, 204, 18), first.message());
+        assertEquals(new UiRect(18, 141, 98, 23), first.cancel());
+        assertEquals(new UiRect(124, 141, 98, 23), first.submit());
         assertTrue(first.isTightCompact());
         assertSupportedGeometry(first);
     }

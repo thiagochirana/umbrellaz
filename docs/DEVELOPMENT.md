@@ -33,7 +33,7 @@ Logging: SLF4J
 
 Umbrellaz is delivered as one universal Fabric mod JAR containing common/server code and a split client source set. The server remains authoritative; the client mod is required for the custom GUI migration. The exact Minecraft and Fabric versions must match the release metadata.
 
-The universal artifact is intended for both dedicated and integrated servers. TLauncher users must install the matching Umbrellaz client mod in the client `mods` directory, and the server must provide the matching required resource pack when its assets are needed. A resource pack is not a substitute for the client mod. Release and installation documentation must identify the universal JAR, exact compatibility, required client mod, resource-pack requirements, and the assumption that the player has an authenticated server session.
+The universal artifact is intended for both dedicated and integrated servers. The same `umbrellaz-mod-<version>.jar` is installed in the client and server `mods` directories; it includes the lock item model and texture, so no separate resource pack, URL, SHA-1, or required-resource-pack configuration is needed. TLauncher users must install the matching universal JAR as the client mod. Release and installation documentation must identify the universal JAR, exact compatibility, and the assumption that the player has an authenticated server session.
 
 The Minecraft 26.3 lane uses Fabric Loom `net.fabricmc.fabric-loom` 1.17.21 with the non-obfuscated runtime namespace. It does not use `officialMojangMappings()` or require a remapping task; the normal Gradle `jar` is the production runtime artifact. Split source sets and `loom.mods` remain valid.
 
@@ -256,9 +256,9 @@ reuse stale services or callback captures.
 The matching client mod is required for the custom GUI. A client that is absent,
 times out during the bounded handshake, or is incompatible is disconnected;
 there is no vanilla GUI fallback. Installation instructions must name the
-universal artifact, exact Minecraft/Fabric compatibility, TLauncher
-client installation, required client mod, server resource pack, and the
-authenticated-session assumption.
+universal artifact, exact Minecraft/Fabric compatibility, TLauncher client
+installation, and the authenticated-session assumption. The lock item model
+and texture are bundled in the universal JAR used by both client and server.
 
 ---
 
@@ -299,7 +299,7 @@ tokens, KDF work, persistence, item accounting, world mutation, and final
 results. JDBC remains behind `DatabaseExecutor`; asynchronous completion must
 return to the server thread before changing Minecraft state.
 
-Custom `Screen` implementations and resource-pack assets are client presentation
+Custom `Screen` implementations and bundled item assets are client presentation
 adapters, not a vanilla GUI fallback. The current vanilla Anvil flow remains in
 place only until the lock-migration phase. Until then, preserve its existing
 reservation, cancellation, fail-closed, password, and exact item-accounting
@@ -317,8 +317,9 @@ client classes/resources, mixin configuration, and the included SQLite
 dependency. The 26.3 non-obfuscated lane uses the runtime namespace directly;
 no remapping task is required.
 
-Phase 5 repeats release/artifact validation for the final universal JAR and
-separate resource-pack ZIP; it is not the first proof of packaging correctness.
+Phase 5 repeats release/artifact validation for the final universal JAR, including
+its bundled client classes and lock item assets; it is not the first proof of
+packaging correctness.
 
 ---
 
@@ -940,7 +941,7 @@ Tests should not require a Minecraft server unless testing Fabric integration sp
 
 # GitHub Releases
 
-The local `release` task builds and publishes the main mod jar to GitHub:
+The local `release` task builds and publishes the universal mod jar to GitHub:
 
 ```bash
 gh auth login
@@ -948,15 +949,15 @@ gh auth login
 ```
 
 Alternatively, authenticate the GitHub CLI with `GH_TOKEN`. The release
-depends on and builds the normal production `jar` plus the separate
-resource-pack ZIP, then uploads both validated artifacts; the sources jar is not
-published.
+depends on and builds the normal production `jar`, then validates and uploads
+only that universal artifact; no sources jar or separate resource-pack artifact
+is published.
 
 The Minecraft 26.3 non-obfuscated lane uses the runtime namespace directly, so
 the normal Gradle `jar` is the production universal artifact and no remapping
 task is required. Final release validation inspects the JAR metadata,
-entrypoints, client classes/resources, mixins, and included SQLite dependency,
-as well as the separate resource-pack artifact.
+entrypoints, client classes/resources, mixins, included SQLite dependency, and
+bundled lock item assets.
 
 The default release tag is `v${version}`. Override it when needed with
 `./gradlew -PreleaseTag=v1.2.3 release`. If the tag does not exist, `gh release

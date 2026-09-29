@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class LockPromptModelTest {
     @Test
     void exposesModeSpecificPortugueseCopy() {
-        assertEquals("Cadeado Umbrellaz", LockPromptMode.CREATE_PASSWORD.title());
+        assertEquals("Cadeado", LockPromptMode.CREATE_PASSWORD.title());
         assertEquals("Criar cadeado", LockPromptMode.CREATE_PASSWORD.submitLabel());
         assertEquals("Confirmar", LockPromptMode.CONFIRM_PASSWORD.submitLabel());
         assertTrue(LockPromptMode.CONFIRM_PASSWORD.passwordHint().contains("primeiro"));

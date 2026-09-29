@@ -4,9 +4,7 @@ build/
 build/*
 !build/libs/
 build/libs/*
-!build/libs/umbrellaz-*.jar
-!build/libs/umbrellaz-resource-pack-*.zip
-build/libs/umbrellaz-*-sources.jar
+!build/libs/umbrellaz-mod-*.jar
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/

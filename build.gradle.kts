@@ -1,6 +1,5 @@
 import java.io.File
 import org.gradle.jvm.tasks.Jar
-import org.gradle.api.tasks.bundling.Zip
 
 plugins {
     java
@@ -19,10 +18,10 @@ loom {
 }
 
 group = "dev.chirana"
-version = "1.4.5"
+version = "1.4.7"
 
 base {
-    archivesName = "umbrellaz"
+    archivesName = "umbrellaz-mod"
 }
 
 repositories {
@@ -46,8 +45,6 @@ java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)
     }
-
-    withSourcesJar()
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -57,7 +54,6 @@ tasks.withType<JavaCompile>().configureEach {
 
 tasks.processResources {
     inputs.property("version", project.version)
-    exclude("resourcepack/**")
 
     filesMatching("fabric.mod.json") {
         expand("version" to project.version)
@@ -68,31 +64,14 @@ tasks.test {
     useJUnitPlatform()
 }
 
-val resourcePackZip = tasks.register<Zip>("resourcePackZip") {
-    group = "distribution"
-    description = "Builds the Umbrellaz client resource pack."
-    archiveFileName.set("umbrellaz-resource-pack-${project.version}.zip")
-    destinationDirectory.set(layout.buildDirectory.dir("libs"))
-    from("src/main/resources/resourcepack")
-    includeEmptyDirs = false
-    isReproducibleFileOrder = true
-    isPreserveFileTimestamps = false
-}
-
-val resourcePackArtifact = resourcePackZip.flatMap { it.archiveFile }
-
-tasks.named("build") {
-    dependsOn(resourcePackZip)
-}
-
 val releaseArtifact = tasks.named<Jar>("jar").flatMap { it.archiveFile }
 val releaseTag = providers.gradleProperty("releaseTag")
     .orElse(providers.provider { "v${project.version}" })
 
 tasks.register<Exec>("release") {
     group = "publishing"
-    description = "Builds the project and publishes the main jar as a GitHub release."
-    dependsOn(tasks.named("build"), resourcePackZip)
+    description = "Builds the project and publishes the universal mod jar as a GitHub release."
+    dependsOn(tasks.named("build"))
     outputs.upToDateWhen { false }
     isIgnoreExitValue = true
 
@@ -100,10 +79,6 @@ tasks.register<Exec>("release") {
         val artifact = releaseArtifact.get().asFile
         if (!artifact.isFile) {
             throw GradleException("Release artifact was not found: ${artifact.absolutePath}")
-        }
-        val resourcePack = resourcePackArtifact.get().asFile
-        if (!resourcePack.isFile) {
-            throw GradleException("Resource-pack artifact was not found: ${resourcePack.absolutePath}")
         }
 
         val ghAvailable = System.getenv("PATH")
@@ -129,7 +104,6 @@ tasks.register<Exec>("release") {
             "create",
             tag,
             artifact.absolutePath,
-            resourcePack.absolutePath,
             "--title",
             "Umbrellaz ${project.version}",
             "--generate-notes"

@@ -1,5 +1,6 @@
 package dev.chirana.umbrellaz.lock;
 
+import com.mojang.math.Transformation;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.MinecraftServer;
@@ -11,6 +12,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.level.block.state.BlockState;
+import org.joml.Vector3f;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -89,6 +91,8 @@ final class LockMarkerService {
             }
             if (plan.create()) {
                 create(level, expectedMarker, lockerId);
+            } else if (plan.keeperIndex() >= 0) {
+                configure(candidates.get(plan.keeperIndex()), expectedMarker);
             }
         }
     }
@@ -151,6 +155,13 @@ final class LockMarkerService {
         if (display == null) {
             return;
         }
+        configure(display, marker);
+        display.addTag(MARKER_TAG);
+        display.addTag(LockMarkerIdentity.lockerTag(lockerId));
+        level.addFreshEntity(display);
+    }
+
+    private void configure(ItemDisplay display, ExpectedMarker marker) {
         BlockPos position = marker.position();
         Direction facing = marker.facing();
         LockMarkerAnchor.Anchor anchor = LockMarkerAnchor.frontFace(position.getX(), position.getY(), position.getZ(),
@@ -158,12 +169,11 @@ final class LockMarkerService {
         display.setPos(anchor.x(), anchor.y(), anchor.z());
         display.setYRot(anchor.yaw());
         display.setXRot(anchor.pitch());
+        display.setTransformation(new Transformation(null, null,
+                new Vector3f(LockMarkerAnchor.SCALE), null));
         display.setNoGravity(true);
         display.setSilent(true);
-        display.addTag(MARKER_TAG);
-        display.addTag(LockMarkerIdentity.lockerTag(lockerId));
         display.getSlot(0).set(LockItem.create());
-        level.addFreshEntity(display);
     }
 
     private boolean isMarker(ItemDisplay display) {

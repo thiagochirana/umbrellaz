@@ -11,7 +11,7 @@ class LockPromptNarrationTest {
 
         LockPromptNarration narration = LockPromptNarration.from(model, false);
 
-        assertTrue(narration.title().contains("Cadeado Umbrellaz"));
+        assertTrue(narration.title().contains("Cadeado"));
         assertTrue(narration.focus().contains("Campo de senha"));
         assertTrue(narration.focus().contains("3 de 4"));
         assertTrue(narration.status().contains("formato inválido"));

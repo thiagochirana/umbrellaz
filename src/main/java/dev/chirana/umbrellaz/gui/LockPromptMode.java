@@ -25,7 +25,7 @@ public enum LockPromptMode {
     }
 
     public String title() {
-        return "Cadeado Umbrellaz";
+        return "Cadeado";
     }
 
     public String description() {

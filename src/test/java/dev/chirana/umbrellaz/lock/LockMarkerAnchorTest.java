@@ -11,13 +11,23 @@ final class LockMarkerAnchorTest {
     private static final double TOLERANCE = 0.000001D;
 
     @Test
-    void anchorsEveryFacingJustInsideItsFrontFace() {
-        assertAnchor(10.5D, 20.5D, 30.01D, 180.0F, 0.0F, 0, 0, -1);
-        assertAnchor(10.5D, 20.5D, 30.99D, 0.0F, 0.0F, 0, 0, 1);
-        assertAnchor(10.01D, 20.5D, 30.5D, 90.0F, 0.0F, -1, 0, 0);
-        assertAnchor(10.99D, 20.5D, 30.5D, -90.0F, 0.0F, 1, 0, 0);
-        assertAnchor(10.5D, 20.99D, 30.5D, 0.0F, -90.0F, 0, 1, 0);
-        assertAnchor(10.5D, 20.01D, 30.5D, 0.0F, 90.0F, 0, -1, 0);
+    void anchorsEveryFacingAtItsFaceLocalUpperRightCorner() {
+        assertAnchor(10.14D, 20.86D, 30.01D, 180.0F, 0.0F, 0, 0, -1);
+        assertAnchor(10.86D, 20.86D, 30.99D, 0.0F, 0.0F, 0, 0, 1);
+        assertAnchor(10.01D, 20.86D, 30.86D, 90.0F, 0.0F, -1, 0, 0);
+        assertAnchor(10.99D, 20.86D, 30.14D, -90.0F, 0.0F, 1, 0, 0);
+        assertAnchor(10.86D, 20.99D, 30.14D, 0.0F, -90.0F, 0, 1, 0);
+        assertAnchor(10.86D, 20.01D, 30.86D, 0.0F, 90.0F, 0, -1, 0);
+        assertEquals(0.18F, LockMarkerAnchor.SCALE);
+    }
+
+    @Test
+    void scaledMarkerKeepsAVisibleMarginInsideTheFaceEdges() {
+        LockMarkerAnchor.Anchor anchor = LockMarkerAnchor.frontFace(10, 20, 30, 0, 0, -1);
+        double halfScale = LockMarkerAnchor.SCALE / 2.0D;
+
+        assertEquals(10.05D, anchor.x() - halfScale, TOLERANCE);
+        assertEquals(20.95D, anchor.y() + halfScale, TOLERANCE);
     }
 
     @Test
