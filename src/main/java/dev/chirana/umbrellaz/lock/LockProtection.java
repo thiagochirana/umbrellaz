@@ -23,7 +23,7 @@ public final class LockProtection {
         if (LockBlockAdapter.classify(level.getBlockState(position)).isEmpty()) {
             return Decision.NOT_SUPPORTED;
         }
-        if (!LockWorldIdentity.isReady() || !placements.isReady() || !cache.isReady()) {
+        if (!LockWorldIdentity.isReady(level) || !placements.isReady() || !cache.isReady()) {
             return Decision.NOT_READY;
         }
         return LockWorldIdentity.tryTarget(level, position)

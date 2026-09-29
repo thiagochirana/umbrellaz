@@ -1,30 +1,34 @@
 package dev.chirana.umbrellaz.player;
 
-import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import dev.chirana.umbrellaz.runtime.ServerRuntimeRegistry;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 
 import java.util.UUID;
 
 public final class HealthLockEvents {
-    private static volatile HealthLockService runtimeService;
-
     private HealthLockEvents() {
     }
 
-    public static void register(HealthLockService healthLockService) {
-        runtimeService = healthLockService;
-        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> healthLockService.clear(handler.player.getUUID()));
+    public static boolean isLocked(ServerPlayer player) {
+        if (player == null || !(player.level() instanceof ServerLevel level)) return false;
+        return ServerRuntimeRegistry.findReady(level.getServer())
+                .map(runtime -> runtime.healthLockService().lockedHealth(player.getUUID()).isPresent())
+                .orElse(false);
+    }
+
+    public static float lockedHealth(ServerPlayer player) {
+        if (player == null || !(player.level() instanceof ServerLevel level)) return 0.0f;
+        return ServerRuntimeRegistry.findReady(level.getServer())
+                .flatMap(runtime -> runtime.healthLockService().lockedHealth(player.getUUID()))
+                .orElse(0.0f);
     }
 
     public static boolean isLocked(UUID playerUuid) {
-        HealthLockService healthLockService = runtimeService;
-        return healthLockService != null && healthLockService.lockedHealth(playerUuid).isPresent();
+        return false;
     }
 
     public static float lockedHealth(UUID playerUuid) {
-        HealthLockService healthLockService = runtimeService;
-        if (healthLockService == null) {
-            return 0.0f;
-        }
-        return healthLockService.lockedHealth(playerUuid).orElse(0.0f);
+        return 0.0f;
     }
 }

@@ -12,7 +12,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class ItemEntityMixin {
     @Inject(method = "playerTouch", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockPickup(Player player, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }

@@ -29,17 +29,14 @@ public abstract class LivingEntityMixin {
 
     @Inject(method = "setHealth", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockLockedHealthChange(float health, CallbackInfo callbackInfo) {
-        if (isLockedPlayer() && Float.compare(health, HealthLockEvents.lockedHealth(playerUuid())) != 0) {
+        if (isLockedPlayer() && Float.compare(health, HealthLockEvents.lockedHealth((ServerPlayer) (Object) this)) != 0) {
             callbackInfo.cancel();
         }
     }
 
     private boolean isLockedPlayer() {
         return (Object) this instanceof ServerPlayer player
-                && HealthLockEvents.isLocked(player.getUUID());
+                && HealthLockEvents.isLocked(player);
     }
 
-    private java.util.UUID playerUuid() {
-        return ((ServerPlayer) (Object) this).getUUID();
-    }
 }

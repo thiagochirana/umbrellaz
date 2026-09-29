@@ -224,16 +224,16 @@ class LockCoreTest {
         assertEquals(LockAccessDecision.LOCKED,
                 service.lookupAccess(player, placement, LockAction.OPEN).decision());
         assertEquals(LockAccessDecision.WRONG_PASSWORD,
-                service.confirmPassword(player, placement, LockAction.OPEN, null).join().decision());
+                verifyAndCommitPassword(service, player, List.of(placement), LockAction.OPEN, null).decision());
         assertEquals(LockAccessDecision.WRONG_PASSWORD,
-                service.confirmPassword(player, placement, LockAction.OPEN, "B123").join().decision());
+                verifyAndCommitPassword(service, player, List.of(placement), LockAction.OPEN, "B123").decision());
         assertEquals(LockAccessDecision.GRANTED,
-                service.confirmPassword(player, placement, LockAction.OPEN, "a123").join().decision());
+                verifyAndCommitPassword(service, player, List.of(placement), LockAction.OPEN, "a123").decision());
         assertEquals(LockAccessDecision.GRANTED,
                 service.lookupAccess(player, placement, LockAction.BREAK).decision());
         service.disconnect(player);
         assertEquals(LockAccessDecision.WRONG_PASSWORD,
-                service.confirmPassword(player, placement, LockAction.REMOVE, "B123").join().decision());
+                verifyAndCommitPassword(service, player, List.of(placement), LockAction.REMOVE, "B123").decision());
         service.close();
     }
 
@@ -262,8 +262,8 @@ class LockCoreTest {
         assertEquals(LockAccessDecision.LOCKED,
                 service.lookupAccess(UUID.randomUUID(), List.of(secondPlacement, firstPlacement), LockAction.OPEN).decision());
         assertEquals(LockAccessDecision.GRANTED,
-                service.confirmPassword(UUID.randomUUID(), List.of(firstPlacement, secondPlacement),
-                        LockAction.OPEN, "A123").join().decision());
+                verifyAndCommitPassword(service, UUID.randomUUID(), List.of(firstPlacement, secondPlacement),
+                        LockAction.OPEN, "A123").decision());
         service.close();
     }
 
@@ -314,7 +314,7 @@ class LockCoreTest {
         UUID player = UUID.randomUUID();
 
         assertEquals(LockAccessDecision.VERIFICATION_BUSY,
-                service.confirmPassword(player, placement, LockAction.OPEN, "A123").join().decision());
+                verifyAndCommitPassword(service, player, List.of(placement), LockAction.OPEN, "A123").decision());
         assertEquals(LockAccessDecision.LOCKED,
                 service.lookupAccess(player, placement, LockAction.OPEN).decision());
         service.close();
@@ -341,10 +341,10 @@ class LockCoreTest {
                 new AttemptLimiter(), cache, Runnable::run);
         UUID player = UUID.randomUUID();
         assertEquals(LockAccessDecision.GRANTED,
-                verificationService.confirmPassword(player, placement, LockAction.OPEN, "A123").join().decision());
+                verifyAndCommitPassword(verificationService, player, List.of(placement), LockAction.OPEN, "A123").decision());
         verificationService.disconnect(player);
         assertEquals(LockAccessDecision.GRANTED,
-                verificationService.confirmPassword(player, placement, LockAction.OPEN, "A123").join().decision());
+                verifyAndCommitPassword(verificationService, player, List.of(placement), LockAction.OPEN, "A123").decision());
         service.close();
         verificationService.close();
     }
@@ -423,6 +423,26 @@ class LockCoreTest {
         assertFalse(LockMarkerIdentity.isMarker(Set.of(LockMarkerIdentity.MARKER_TAG)));
         assertFalse(LockMarkerIdentity.isMarker(Set.of(LockMarkerIdentity.MARKER_TAG,
                 "umbrellaz:locker=not-a-uuid")));
+    }
+
+    @Test
+    void creationCompletionCommitsOnlyAfterPersistenceAndFreshValidation() {
+        assertEquals(CreationCompletionDecision.Outcome.COMMIT,
+                CreationCompletionDecision.decide(true, true));
+        assertEquals(CreationCompletionDecision.Outcome.COMPENSATE,
+                CreationCompletionDecision.decide(true, false));
+        assertEquals(CreationCompletionDecision.Outcome.COMPENSATE,
+                CreationCompletionDecision.decide(false, false));
+    }
+
+    private LockAccessResult verifyAndCommitPassword(LockService service, UUID playerUuid,
+                                                     List<PlacementProvenance> placements,
+                                                     LockAction action, String password) {
+        LockService.PasswordVerification verification = service.verifyPasswordAsync(
+                playerUuid, placements, action, password).join();
+        return verification.hasProof()
+                ? service.commitPasswordProof(verification.proof())
+                : verification.result();
     }
 
     private LockerMetadata locker(LockTarget target) {

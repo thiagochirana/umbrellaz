@@ -2,13 +2,17 @@
 
 ## Overview
 
-Umbrellaz is a modular server-side Fabric application embedded inside a Minecraft server.
+Umbrellaz is a modular, server-authoritative Fabric application delivered as one
+universal client/server mod JAR and embedded inside Minecraft. Common/server
+behavior remains authoritative; the client source set supplies the custom GUI
+adapter.
 
 The architecture is designed around three goals:
 
 1. keep Minecraft integration at the edges
 2. keep application behavior independent from infrastructure where practical
 3. allow new administrative modules to be added without restructuring existing code
+4. keep client presentation separate from server-owned state and decisions
 
 The project starts with:
 
@@ -99,8 +103,8 @@ src/main/java/dev/chirana/umbrellaz/
 │   ├── UmbrellazConfig.java
 │   └── ConfigLoader.java
 │
-└── infra/
-    └── db/
+    └── infra/
+        └── db/
         ├── Database.java
         ├── DatabaseExecutor.java
         ├── Migration.java
@@ -108,49 +112,56 @@ src/main/java/dev/chirana/umbrellaz/
         └── sqlite/
             ├── SQLiteDatabase.java
             └── SQLiteConnectionFactory.java
+
+src/client/java/dev/chirana/umbrellaz/
+└── client/
+    └── ... client entrypoint, screens, rendering, and input ...
 ```
 
 This structure may evolve, but dependency direction must remain consistent.
 
+`src/main/java` is common/server code and must not import or load
+`net.minecraft.client`. Client rendering, focus, and input belong under
+`src/client/java` behind a separate client entrypoint. Shared protocol payloads,
+codecs, version constants, and capability contracts must remain
+client/server-neutral so both environments can load them.
+
 ---
 
-# Composition Root
+# Composition Root and Server Lifecycle
 
-`Umbrellaz.java` is the application composition root.
+The common `Umbrellaz.java` initializer is environment-safe and
+registration-only. Fabric callbacks and payload registrations are global and
+are installed exactly once. They must not register `LockEvents` or capture
+server-owned services per server lifecycle. They register resolvers that, at
+invocation time, select the runtime associated with the event's
+`MinecraftServer` or connection. If no matching ready runtime exists, the
+callback fails closed. The initializer does not construct server-owned
+databases, executors, repositories, services, caches, command modules, or other
+runtime state and must not load client classes.
 
-Its responsibility is to create and connect the application's components.
-
-Conceptually:
+A per-server runtime composition root/factory creates and connects the
+application's databases, executor, repositories, services, caches, command
+adapters, and protocol/runtime state for each server lifecycle:
 
 ```text
-Umbrellaz
-   │
-   ├── Config
-   │
-   ├── DatabaseExecutor
-   │
-   ├── Database
-   │
-   ├── MigrationRunner
-   │
-   ├── PlayerRepository
-   │
-   ├── WhitelistRepository
-   │
-   ├── PlayerService
-   │
-   ├── WhitelistService
-   │
-   ├── AuthService
-   │
-   ├── AuthorizationService
-   │
-   ├── Commands
-   │
-   └── Events
+Server lifecycle start
+   ↓
+Config → DatabaseExecutor → Database/Migrations
+                         ↓
+              Repositories → Services → Caches
+                                      ↓
+                         Commands, Events, Protocol
 ```
 
-`Umbrellaz.java` must not contain business rules.
+The runtime owns those components, connection-scoped protocol sessions, and
+pending action contexts. Shutdown closes pending work and all resources for that
+server instance. Before shutdown, it marks the
+runtime unavailable and removes its registry association so callbacks cannot
+resolve it. A subsequent integrated-server restart constructs a fresh runtime;
+no database executor, service, protocol session, or server reference may leak
+across instances. The initializer and runtime composition must not contain
+business rules.
 
 ---
 
@@ -488,6 +499,84 @@ Only the Minecraft server thread should perform authoritative world/player mutat
 
 ---
 
+# Custom GUI Packaging and Protocol
+
+The build delivers one universal Fabric mod JAR with common/server
+code, a split client source set, and separate `main` and `client` entrypoints.
+The exact Minecraft/Fabric compatibility declared by the artifact is required.
+For TLauncher, the matching universal JAR must be installed as the client mod
+in the client `mods` directory; a compatible Umbrellaz client mod is required.
+The server resource pack remains a separate server-provided asset and does not
+replace the client mod or the authenticated-session requirement.
+
+The Minecraft 26.3 lane uses Fabric Loom `net.fabricmc.fabric-loom` 1.17.21
+with the non-obfuscated runtime namespace; it does not use
+`officialMojangMappings()` or require a remapping task. `releaseArtifact` uses
+the normal production `jar` output; release depends on and builds that JAR plus
+the separate resource-pack ZIP.
+
+GUI networking uses typed `CustomPacketPayload` and `StreamCodec` contracts.
+Every payload is versioned, bounded, and validated; codecs must reject
+oversized, malformed, or unsupported data without allocating unbounded state.
+The application performs an explicit hello/capability exchange because Fabric
+payload registration is not a capability handshake. Each connection has one
+protocol state:
+
+```text
+UNNEGOTIATED → COMPATIBLE
+UNNEGOTIATED → INCOMPATIBLE → DISCONNECTED
+UNNEGOTIATED → DISCONNECTED
+```
+
+`UNNEGOTIATED` is fail-closed during the handshake window: even when normal
+whitelist/authentication has completed, the player remains interaction-blocked
+until the state is `COMPATIBLE`. Absent, timed-out, or incompatible clients are
+disconnected after the bounded handshake deadline. Timeout, incompatible
+response, disconnect, and handshake failure cancel the deadline and session,
+then disconnect on the server thread; no blocking wait is permitted. No vanilla
+GUI fallback is permitted.
+
+A connection-scoped nonce and generation bind requests to the physical
+connection/session. Action contexts are server-issued, one-shot, and expiring.
+Their token must atomically transition `OPEN → IN_FLIGHT` before KDF, database,
+reservation, or world work; only the winner dispatches. Completion and
+cancellation are terminal and idempotent. Each context binds the physical
+connection/session, player UUID, negotiated nonce/generation, server-selected
+action and target generations, and expiry. Disconnect or runtime shutdown
+invalidates contexts; retries receive fresh tokens.
+
+Capability is not authorization. For every action, the server validates the
+authenticated session, negotiated capability, feature state, nonce/context or
+token, target identity and bounds, and application authorization before calling
+existing services. The client owns only rendering, focus, transient UI state,
+and request input. The server owns identity, authentication, locks, target
+resolution, tokens, KDF work, persistence, item accounting, world mutation, and
+final results. JDBC remains behind `DatabaseExecutor`, and server state changes
+return to the server thread after asynchronous work.
+
+Custom client `Screen` and resource-pack assets are presentation adapters, not
+the vanilla GUI flow. The current Anvil adapter remains only until lock
+migration; its existing server-authoritative reservation, cancellation,
+fail-closed behavior, password policy, and exact item accounting must be
+preserved during the transition.
+
+---
+
+# GUI Delivery Gates
+
+Phase 2 foundation work uses the normal production `jar` output for
+`releaseArtifact` and performs the first production universal-JAR inspection
+after split-source-set and metadata wiring. Gate 2 inspects the expanded
+`fabric.mod.json`, environment `*`, `main` and `client` entrypoints, client
+classes/resources, mixin configuration, and the included SQLite dependency.
+The 26.3 non-obfuscated lane uses the runtime namespace directly; no remapping
+task is required.
+
+Phase 5 repeats release/artifact validation for the final universal JAR and
+separate resource-pack ZIP. It is not the first proof of packaging correctness.
+
+---
+
 # Database
 
 Default location:
@@ -729,9 +818,10 @@ Desired startup order:
 7. create services
 8. load whitelist cache
 9. load player alias cache
-10. register commands
-11. register events
-12. mark Umbrellaz ready
+10. verify global command/event/payload registrations were installed exactly
+    once by the common initializer
+11. attach this server to the runtime registry
+12. mark this runtime ready
 ```
 
 Authorization must fail closed while startup state is incomplete.
@@ -743,10 +833,12 @@ Authorization must fail closed while startup state is incomplete.
 Desired shutdown:
 
 ```text
-1. stop accepting new database work where practical
-2. complete queued critical operations
-3. close SQLite resources
-4. shutdown DatabaseExecutor
+1. mark runtime unavailable and remove its registry association
+2. invalidate connection sessions and action contexts
+3. stop accepting new database work where practical
+4. complete queued critical operations
+5. close SQLite resources
+6. shutdown DatabaseExecutor
 ```
 
 The application must not leak non-daemon executor threads that prevent server shutdown.
@@ -1086,34 +1178,33 @@ without requiring architectural redesign.
 
 ---
 
-# GUI Future
+# GUI Adapter
 
-A future GUI may exist, but it must remain an adapter.
+The custom GUI is a client presentation adapter, not an authorization source.
 
 Conceptually:
 
 ```text
-Client GUI
+Client Screen/input
+    ↓ typed bounded payload
+server protocol adapter
+    ↓ authenticated session + capability/token validation
+AuthorizationService / lock service
     ↓
-network message
-    ↓
-server adapter
-    ↓
-AuthorizationService
-    ↓
-Application Service
+server result payload
 ```
 
-The GUI must never become an authorization source.
+All identity, authorization, lock state, password validation, persistence,
+item accounting, world mutation, and final decisions remain server-side. The
+client may render only server-provided state and submit request input; it must
+not be trusted for button identifiers, target identity, permissions, password
+policy, or completion claims.
 
-All decisions remain server-side.
-
-The implemented first GUI adapter is a vanilla Anvil input flow for creating
-and submitting a lock password. It remains a Minecraft boundary adapter: it
-performs no SQL, does not become an authorization source, and calls the lock
-service's explicit password-confirmation operation. It is server-authoritative
-and rejects item movement, shift-click, drag, swap, and output duplication
-paths.
+The custom Screen and resource-pack assets are not a vanilla GUI fallback. The
+current vanilla Anvil input flow remains only until lock migration, and its
+server-authoritative behavior, item reservation/compensation, stale-operation
+handling, and rejection of movement, shift-click, drag, swap, and duplication
+paths must remain intact until then.
 
 ---
 
@@ -1153,7 +1244,7 @@ The project is not currently trying to become:
 - a generic plugin framework
 - an ORM-based application
 - a reactive system
-- a client/server GUI framework
+- a generic client/server GUI framework beyond the required Umbrellaz screens
 - an HTTP administration platform
 
 Do not solve problems the project does not yet have.

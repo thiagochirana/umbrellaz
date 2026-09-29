@@ -4,7 +4,7 @@
 
 This file defines the mandatory operating rules for any coding agent working on the Umbrellaz repository.
 
-Umbrellaz is a modular server-side Minecraft Fabric mod focused initially on:
+Umbrellaz is a modular, server-authoritative Minecraft Fabric mod with common/server code and a client GUI surface, focused initially on:
 
 - player authorization
 - whitelist management
@@ -88,7 +88,7 @@ Assume the following unless explicitly changed:
 - SQLite JDBC
 - JUnit
 - SLF4J
-- server-side mod
+- universal client/server mod JAR with server-authoritative behavior
 
 Do not change foundational versions without a clear reason.
 
@@ -483,20 +483,15 @@ Do not use dependency injection frameworks.
 
 Use explicit construction.
 
-`Umbrellaz.java` acts primarily as the composition root.
+The common `Umbrellaz.java` initializer is registration-only. It may install
+global callbacks and lifecycle hooks, but it must not construct configuration,
+database, executor, repository, service, cache, command, or other runtime
+state.
 
-It may initialize:
-
-- configuration
-- database
-- executor
-- repositories
-- services
-- caches
-- command modules
-- event handlers
-
-It must not accumulate application business logic.
+A per-server runtime composition root/factory creates, wires, and closes those
+components for each dedicated or integrated server lifecycle. The common
+initializer must not own or retain that server runtime, and it must not
+accumulate application business logic.
 
 ---
 

@@ -2,20 +2,23 @@ package dev.chirana.umbrellaz.lock;
 
 import dev.chirana.umbrellaz.infra.db.DatabaseExecutor;
 
-import java.util.Objects;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class LockService implements AutoCloseable {
@@ -28,6 +31,7 @@ public final class LockService implements AutoCloseable {
     private final ExecutorService ownedExecutor;
     private final Set<PlayerLocker> unlocked = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<VerificationKey, CompletableFuture<VerificationOutcome>> inFlight = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<LockPasswordProof, ProofBinding> pendingProofs = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, Long> playerEpochs = new ConcurrentHashMap<>();
     private final AtomicLong lifecycleEpoch = new AtomicLong();
 
@@ -137,45 +141,102 @@ public final class LockService implements AutoCloseable {
         return resolved(LockAccessDecision.LOCKED, action, locker, 0);
     }
 
-    public CompletableFuture<LockAccessResult> confirmPassword(UUID playerUuid, PlacementProvenance placement,
-                                                                 LockAction action, String password) {
-        return confirmPassword(playerUuid, List.of(placement), action, password);
-    }
-
-    public CompletableFuture<LockAccessResult> confirmPassword(UUID playerUuid,
-                                                                 Collection<PlacementProvenance> placements,
-                                                                 LockAction action, String password) {
-        LockAccessResult lookup = lookupAccess(playerUuid, placements, action);
+    public CompletableFuture<PasswordVerification> verifyPasswordAsync(
+            UUID playerUuid, Collection<PlacementProvenance> placements,
+            LockAction action, String password) {
+        Objects.requireNonNull(playerUuid, "playerUuid");
+        Objects.requireNonNull(placements, "placements");
+        Objects.requireNonNull(action, "action");
+        List<PlacementProvenance> snapshot = immutablePlacements(placements);
+        LockAccessResult lookup = lookupAccess(playerUuid, snapshot, action);
         if (lookup.decision() != LockAccessDecision.LOCKED) {
-            return CompletableFuture.completedFuture(lookup);
+            return CompletableFuture.completedFuture(new PasswordVerification(lookup, null));
         }
         if (password == null) {
-            return CompletableFuture.completedFuture(new LockAccessResult(
-                    LockAccessDecision.WRONG_PASSWORD, action, lookup.lockerId(), lookup.ownerUuid(), 0));
+            return CompletableFuture.completedFuture(new PasswordVerification(
+                    new LockAccessResult(LockAccessDecision.WRONG_PASSWORD, action,
+                            lookup.lockerId(), lookup.ownerUuid(), 0), null));
         }
         UUID lockerId = lookup.lockerId();
-        long epoch = playerEpochs.getOrDefault(playerUuid, 0L);
-        VerificationKey key = new VerificationKey(playerUuid, lockerId, lifecycleEpoch.get(), epoch);
-        LockerMetadata locker = null;
-        for (PlacementProvenance placement : placements) {
-            LockerMetadata candidate = cache.lookup(placement).locker();
-            if (candidate != null) {
-                locker = candidate;
-                break;
-            }
+        long playerEpoch = playerEpochs.getOrDefault(playerUuid, 0L);
+        long currentLifecycleEpoch = lifecycleEpoch.get();
+        LockerMetadata locker = lockerFor(snapshot, lockerId);
+        if (locker == null) {
+            return CompletableFuture.completedFuture(new PasswordVerification(
+                    unresolved(LockAccessDecision.NOT_READY, action), null));
         }
-        if (locker == null || !locker.lockerId().equals(lockerId)) {
-            return CompletableFuture.completedFuture(unresolved(LockAccessDecision.NOT_READY, action));
-        }
+        VerificationKey key = new VerificationKey(playerUuid, lockerId, currentLifecycleEpoch,
+                playerEpoch, action, snapshot, passwordDiscriminator(password));
         final CompletableFuture<VerificationOutcome> verification;
         try {
             verification = getOrSubmitVerification(key, password, locker);
         } catch (RejectedExecutionException exception) {
-            return CompletableFuture.completedFuture(new LockAccessResult(
-                    LockAccessDecision.VERIFICATION_BUSY, action, lookup.lockerId(), lookup.ownerUuid(), 0));
+            return CompletableFuture.completedFuture(new PasswordVerification(
+                    new LockAccessResult(LockAccessDecision.VERIFICATION_BUSY, action,
+                            lookup.lockerId(), lookup.ownerUuid(), 0), null));
         }
-        return verification.thenApply(outcome -> new LockAccessResult(outcome.decision(), action,
-                lookup.lockerId(), lookup.ownerUuid(), outcome.cooldownRemainingNanos()));
+        return verification.thenApply(outcome -> {
+            LockAccessResult result = new LockAccessResult(outcome.decision(), action,
+                    lookup.lockerId(), lookup.ownerUuid(), outcome.cooldownRemainingNanos());
+            if (outcome.decision() != LockAccessDecision.GRANTED) {
+                return new PasswordVerification(result, null);
+            }
+            LockPasswordProof proof = new LockPasswordProof(UUID.randomUUID(), action);
+            pendingProofs.put(proof, new ProofBinding(playerUuid, currentLifecycleEpoch,
+                    playerEpoch, action, lockerId, lookup.ownerUuid(), snapshot));
+            return new PasswordVerification(result, proof);
+        });
+    }
+
+    public CompletableFuture<PasswordVerification> verifyPasswordAsync(
+            UUID playerUuid, PlacementProvenance placement, LockAction action, String password) {
+        return verifyPasswordAsync(playerUuid, List.of(placement), action, password);
+    }
+
+    public CompletableFuture<PasswordVerification> verifyPassword(
+            UUID playerUuid, Collection<PlacementProvenance> placements,
+            LockAction action, String password) {
+        return verifyPasswordAsync(playerUuid, placements, action, password);
+    }
+
+    public CompletableFuture<PasswordVerification> verifyPassword(
+            UUID playerUuid, PlacementProvenance placement, LockAction action, String password) {
+        return verifyPasswordAsync(playerUuid, placement, action, password);
+    }
+
+    public synchronized LockAccessResult commitPasswordProof(LockPasswordProof proof) {
+        Objects.requireNonNull(proof, "proof");
+        ProofBinding binding = pendingProofs.remove(proof);
+        if (binding == null) {
+            return staleProofResult(proof.action(), null, null);
+        }
+        if (binding.lifecycleEpoch() != lifecycleEpoch.get()
+                || binding.playerEpoch() != playerEpochs.getOrDefault(binding.playerUuid(), 0L)) {
+            return staleProofResult(binding.action(), binding.lockerId(), binding.ownerUuid());
+        }
+
+        LockAccessResult current = lookupAccess(binding.playerUuid(), binding.placements(), binding.action());
+        if (current.decision() != LockAccessDecision.LOCKED
+                || !binding.lockerId().equals(current.lockerId())) {
+            return staleProofResult(binding.action(), binding.lockerId(), binding.ownerUuid());
+        }
+        unlocked.add(new PlayerLocker(binding.playerUuid(), binding.lockerId()));
+        return new LockAccessResult(LockAccessDecision.GRANTED, binding.action(),
+                current.lockerId(), current.ownerUuid(), 0);
+    }
+
+    public synchronized LockAccessResult commitProof(LockPasswordProof proof) {
+        return commitPasswordProof(proof);
+    }
+
+    public void discardPasswordProof(LockPasswordProof proof) {
+        if (proof != null) {
+            pendingProofs.remove(proof);
+        }
+    }
+
+    public void discardProof(LockPasswordProof proof) {
+        discardPasswordProof(proof);
     }
 
     public CompletableFuture<Void> loadCache(LockRepository repository, DatabaseExecutor databaseExecutor) {
@@ -263,21 +324,26 @@ public final class LockService implements AutoCloseable {
                 });
     }
 
-    public void disconnect(UUID playerUuid) {
+    public synchronized void disconnect(UUID playerUuid) {
         Objects.requireNonNull(playerUuid, "playerUuid");
         playerEpochs.merge(playerUuid, 1L, Long::sum);
         unlocked.removeIf(access -> access.playerUuid().equals(playerUuid));
+        pendingProofs.entrySet().removeIf(entry -> entry.getValue().playerUuid().equals(playerUuid));
     }
 
-    public void resetOnRestart() {
+    public synchronized void resetOnRestart() {
         lifecycleEpoch.incrementAndGet();
         unlocked.clear();
+        pendingProofs.clear();
         attempts.resetOnRestart();
         cache.markNotReady();
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
+        lifecycleEpoch.incrementAndGet();
+        pendingProofs.clear();
+        unlocked.clear();
         if (ownedExecutor != null) {
             ownedExecutor.shutdown();
         }
@@ -323,7 +389,6 @@ public final class LockService implements AutoCloseable {
                 return new VerificationOutcome(LockAccessDecision.COOLDOWN,
                         success.cooldownRemainingNanos());
             }
-            unlocked.add(new PlayerLocker(key.playerUuid(), key.lockerId()));
             return new VerificationOutcome(LockAccessDecision.GRANTED, 0);
         }
         AttemptLimiter.AttemptResult result = attempts.recordFailure(key.playerUuid(), key.lockerId());
@@ -345,6 +410,61 @@ public final class LockService implements AutoCloseable {
         return new LockAccessResult(decision, action, locker.lockerId(), locker.ownerUuid(), remaining);
     }
 
+    private LockerMetadata lockerFor(List<PlacementProvenance> placements, UUID lockerId) {
+        LockerMetadata locker = null;
+        for (PlacementProvenance placement : placements) {
+            LockCache.Lookup lookup = cache.lookup(placement);
+            if (!lookup.ready()) {
+                return null;
+            }
+            if (lookup.locker() != null) {
+                if (locker != null && !locker.lockerId().equals(lookup.locker().lockerId())) {
+                    return null;
+                }
+                locker = lookup.locker();
+            }
+        }
+        return locker != null && locker.lockerId().equals(lockerId) ? locker : null;
+    }
+
+    private List<PlacementProvenance> immutablePlacements(Collection<PlacementProvenance> placements) {
+        List<PlacementProvenance> snapshot = List.copyOf(placements);
+        for (PlacementProvenance placement : snapshot) {
+            Objects.requireNonNull(placement, "placement member");
+        }
+        return snapshot;
+    }
+
+    private String passwordDiscriminator(String password) {
+        try {
+            String canonical = passwordPolicy.canonicalize(password);
+            return "valid:" + digest(canonical.getBytes(StandardCharsets.UTF_8));
+        } catch (IllegalArgumentException exception) {
+            return "invalid:" + digest(password.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private String digest(byte[] input) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(input);
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte value : digest) {
+                result.append(Character.forDigit((value >>> 4) & 0x0f, 16));
+                result.append(Character.forDigit(value & 0x0f, 16));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private LockAccessResult staleProofResult(LockAction action, UUID lockerId, UUID ownerUuid) {
+        if (lockerId == null || ownerUuid == null) {
+            return unresolved(LockAccessDecision.NOT_READY, action);
+        }
+        return new LockAccessResult(LockAccessDecision.LOCKED, action, lockerId, ownerUuid, 0);
+    }
+
     private static ExecutorService defaultExecutor() {
         ThreadFactory factory = runnable -> {
             Thread thread = new Thread(runnable, "umbrellaz-lock-kdf");
@@ -358,9 +478,47 @@ public final class LockService implements AutoCloseable {
     private record PlayerLocker(UUID playerUuid, UUID lockerId) {
     }
 
-    private record VerificationKey(UUID playerUuid, UUID lockerId, long lifecycleEpoch, long playerEpoch) {
+    private record VerificationKey(UUID playerUuid, UUID lockerId, long lifecycleEpoch, long playerEpoch,
+                                   LockAction action, List<PlacementProvenance> placements,
+                                   String passwordDiscriminator) {
+        private VerificationKey {
+            placements = List.copyOf(placements);
+            Objects.requireNonNull(passwordDiscriminator, "passwordDiscriminator");
+        }
     }
 
     private record VerificationOutcome(LockAccessDecision decision, long cooldownRemainingNanos) {
+    }
+
+    public record PasswordVerification(LockAccessResult result, LockPasswordProof proof) {
+        public PasswordVerification {
+            Objects.requireNonNull(result, "result");
+            if (proof != null && result.decision() != LockAccessDecision.GRANTED) {
+                throw new IllegalArgumentException("only successful verification may carry a proof");
+            }
+        }
+
+        public boolean hasProof() {
+            return proof != null;
+        }
+    }
+
+    public record LockPasswordProof(UUID token, LockAction action) {
+        public LockPasswordProof {
+            Objects.requireNonNull(token, "token");
+            Objects.requireNonNull(action, "action");
+        }
+    }
+
+    private record ProofBinding(UUID playerUuid, long lifecycleEpoch, long playerEpoch,
+                                LockAction action, UUID lockerId, UUID ownerUuid,
+                                List<PlacementProvenance> placements) {
+        private ProofBinding {
+            Objects.requireNonNull(playerUuid, "playerUuid");
+            Objects.requireNonNull(action, "action");
+            Objects.requireNonNull(lockerId, "lockerId");
+            Objects.requireNonNull(ownerUuid, "ownerUuid");
+            placements = List.copyOf(placements);
+        }
     }
 }

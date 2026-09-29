@@ -1,6 +1,7 @@
 package dev.chirana.umbrellaz.lock;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Display.ItemDisplay;
@@ -9,6 +10,7 @@ import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityTypes;
+import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -37,7 +39,7 @@ final class LockMarkerService {
     }
 
     void reconcileLoaded(ServerLevel level) {
-        if (!cache.isReady() || !LockWorldIdentity.isReady()) {
+        if (!cache.isReady() || !LockWorldIdentity.isReady(level)) {
             return;
         }
         Set<ChunkPos> chunks = new HashSet<>();
@@ -58,11 +60,11 @@ final class LockMarkerService {
     }
 
     void reconcileChunk(ServerLevel level, ChunkPos chunk) {
-        if (!cache.isReady() || !LockWorldIdentity.isReady()
+        if (!cache.isReady() || !LockWorldIdentity.isReady(level)
                 || level.getChunkSource().getChunkNow(chunk.x(), chunk.z()) == null) {
             return;
         }
-        Map<UUID, BlockPos> expected = expectedMarkers(level, chunk);
+        Map<UUID, ExpectedMarker> expected = expectedMarkers(level, chunk);
         List<ItemDisplay> displays = new ArrayList<>();
         AABB bounds = new AABB(chunk.getMinBlockX(), level.getMinY(), chunk.getMinBlockZ(),
                 chunk.getMaxBlockX() + 1.0D, level.getMaxY() + 1.0D, chunk.getMaxBlockZ() + 1.0D);
@@ -77,22 +79,22 @@ final class LockMarkerService {
         identities.addAll(expected.keySet());
         for (UUID lockerId : identities) {
             List<ItemDisplay> candidates = actual.getOrDefault(lockerId, List.of());
-            BlockPos expectedPosition = expected.get(lockerId);
+            ExpectedMarker expectedMarker = expected.get(lockerId);
             List<MarkerReconciliationPlan.Position> actualPositions = candidates.stream()
                     .map(display -> position(display.blockPosition())).toList();
             MarkerReconciliationPlan.Plan plan = MarkerReconciliationPlan.plan(
-                    expectedPosition == null ? null : position(expectedPosition.above()), actualPositions);
+                    expectedMarker == null ? null : position(expectedMarker.position()), actualPositions);
             for (int index : plan.discardIndices()) {
                 candidates.get(index).discard();
             }
             if (plan.create()) {
-                create(level, expectedPosition, lockerId);
+                create(level, expectedMarker, lockerId);
             }
         }
     }
 
     void reconcileAfterRemoval(ServerLevel level, Collection<PlacementProvenance> placements) {
-        if (LockWorldIdentity.isReady()) {
+        if (LockWorldIdentity.isReady(level)) {
             reconcileTargets(level, placements);
         }
     }
@@ -108,8 +110,8 @@ final class LockMarkerService {
                 .forEach(chunk -> reconcileChunk(level, chunk));
     }
 
-    private Map<UUID, BlockPos> expectedMarkers(ServerLevel level, ChunkPos chunk) {
-        Map<UUID, BlockPos> expected = new HashMap<>();
+    private Map<UUID, ExpectedMarker> expectedMarkers(ServerLevel level, ChunkPos chunk) {
+        Map<UUID, ExpectedMarker> expected = new HashMap<>();
         for (LockerMetadata locker : cache.lockersInChunk(level, chunk)) {
             Optional<LockerMember> canonical = locker.members().stream()
                     .filter(member -> targetInLevel(level, member.target()))
@@ -124,11 +126,16 @@ final class LockMarkerService {
             if (!ChunkPos.containing(position).equals(chunk)) {
                 continue;
             }
-            if (LockBlockAdapter.classify(level.getBlockState(position))
+            BlockState state = level.getBlockState(position);
+            if (LockBlockAdapter.classify(state)
                     .filter(member.blockType()::equals).isEmpty()) {
                 continue;
             }
-            expected.put(locker.lockerId(), position);
+            Optional<Direction> facing = LockBlockAdapter.frontFacing(state);
+            if (facing.isEmpty()) {
+                continue;
+            }
+            expected.put(locker.lockerId(), new ExpectedMarker(position, facing.get()));
         }
         return expected;
     }
@@ -139,12 +146,18 @@ final class LockMarkerService {
                 .orElse(false);
     }
 
-    private void create(ServerLevel level, BlockPos position, UUID lockerId) {
+    private void create(ServerLevel level, ExpectedMarker marker, UUID lockerId) {
         ItemDisplay display = EntityTypes.ITEM_DISPLAY.create(level, EntitySpawnReason.COMMAND);
         if (display == null) {
             return;
         }
-        display.setPos(position.getX() + 0.5D, position.getY() + 1.05D, position.getZ() + 0.5D);
+        BlockPos position = marker.position();
+        Direction facing = marker.facing();
+        LockMarkerAnchor.Anchor anchor = LockMarkerAnchor.frontFace(position.getX(), position.getY(), position.getZ(),
+                facing.getStepX(), facing.getStepY(), facing.getStepZ());
+        display.setPos(anchor.x(), anchor.y(), anchor.z());
+        display.setYRot(anchor.yaw());
+        display.setXRot(anchor.pitch());
         display.setNoGravity(true);
         display.setSilent(true);
         display.addTag(MARKER_TAG);
@@ -171,5 +184,8 @@ final class LockMarkerService {
 
     private BlockPos toBlockPos(LockTarget target) {
         return new BlockPos(target.position().x(), target.position().y(), target.position().z());
+    }
+
+    private record ExpectedMarker(BlockPos position, Direction facing) {
     }
 }

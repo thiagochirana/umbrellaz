@@ -31,7 +31,13 @@ Tests: JUnit
 Logging: SLF4J
 ```
 
-The application is currently server-side only.
+Umbrellaz is delivered as one universal Fabric mod JAR containing common/server code and a split client source set. The server remains authoritative; the client mod is required for the custom GUI migration. The exact Minecraft and Fabric versions must match the release metadata.
+
+The universal artifact is intended for both dedicated and integrated servers. TLauncher users must install the matching Umbrellaz client mod in the client `mods` directory, and the server must provide the matching required resource pack when its assets are needed. A resource pack is not a substitute for the client mod. Release and installation documentation must identify the universal JAR, exact compatibility, required client mod, resource-pack requirements, and the assumption that the player has an authenticated server session.
+
+The Minecraft 26.3 lane uses Fabric Loom `net.fabricmc.fabric-loom` 1.17.21 with the non-obfuscated runtime namespace. It does not use `officialMojangMappings()` or require a remapping task; the normal Gradle `jar` is the production runtime artifact. Split source sets and `loom.mods` remain valid.
+
+The common initializer must be safe to load in either environment and perform registration only. A per-server runtime composition root/factory constructs and closes server-owned databases, executors, repositories, services, caches, command modules, and protocol/runtime state for each dedicated or integrated server lifecycle; this includes stopping and recreating them across an integrated-server restart. Client rendering and input are never loaded from common/server code.
 
 ---
 
@@ -201,11 +207,12 @@ Do not introduce a DI framework.
 
 # Composition Root
 
-Object creation should primarily happen during application bootstrap.
+The common main initializer performs global registration and lifecycle hooks
+only. It must not wire or construct a database, executor, repository, service,
+cache, command module, or other server runtime state.
 
-The main mod initializer is responsible for wiring dependencies.
-
-Conceptually:
+A per-server runtime composition root/factory creates, wires, and closes those
+components for each dedicated or integrated server lifecycle:
 
 ```text
 Database
@@ -217,7 +224,101 @@ Service
 Command/Event
 ```
 
-Classes should receive dependencies rather than discover them globally.
+Classes should receive dependencies rather than discover them globally. The
+common initializer must not own or retain the per-server runtime.
+
+---
+
+# Universal Mod and Environment Boundaries
+
+The project produces one universal Fabric mod JAR. Common/server code
+lives in `src/main/java`; client-only rendering and input live in
+`src/client/java` and use a separate client entrypoint. `src/main/java` must not
+import or load `net.minecraft.client` classes. Shared protocol contracts must
+remain neutral so they can be loaded by both environments.
+
+The common initializer is environment-safe and registration-only. It must not
+construct server-owned databases, executors, repositories, services, caches,
+command modules, or other runtime state. Those objects are created for each
+server lifecycle, owned by that
+server instance, and closed during shutdown before a later lifecycle creates a
+new instance. This applies equally to integrated-server stop/restart; no stale
+runtime or server reference may survive the restart.
+
+Fabric callbacks and payload registrations are global and are installed exactly
+once. They must not register `LockEvents` or capture server-owned services per
+server lifecycle. At invocation, each callback resolves the runtime associated
+with the event's `MinecraftServer` or connection. If no matching ready runtime
+exists, it fails closed. Shutdown first marks and removes the runtime
+association, then closes that instance, so an integrated-server restart cannot
+reuse stale services or callback captures.
+
+The matching client mod is required for the custom GUI. A client that is absent,
+times out during the bounded handshake, or is incompatible is disconnected;
+there is no vanilla GUI fallback. Installation instructions must name the
+universal artifact, exact Minecraft/Fabric compatibility, TLauncher
+client installation, required client mod, server resource pack, and the
+authenticated-session assumption.
+
+---
+
+# Custom GUI and Protocol Development
+
+Networking uses typed `CustomPacketPayload` contracts with `StreamCodec` and
+bounded fields. The application handshake is explicit and versioned; Fabric
+registration alone is not a capability negotiation. Each connection tracks a
+capability state:
+
+```text
+UNNEGOTIATED → COMPATIBLE
+UNNEGOTIATED → INCOMPATIBLE → DISCONNECTED
+UNNEGOTIATED → DISCONNECTED
+```
+
+The handshake has a bounded deadline. Protocol sessions use a connection-scoped
+nonce. Action contexts are one-shot, expire promptly, and are consumed only
+after server validation, preventing replay. `UNNEGOTIATED` is fail-closed during
+the handshake window: even an otherwise authenticated/whitelisted player stays
+interaction-blocked until the protocol reaches `COMPATIBLE`. Timeout,
+incompatible response, disconnect, and handshake failure cancel the deadline and
+session, then disconnect on the server thread; no blocking wait is permitted.
+
+Before any KDF, database, reservation, or world work, an action context token
+must atomically transition `OPEN → IN_FLIGHT`; only the winner dispatches. Its
+completion or cancellation is terminal and idempotent. Each context binds to
+the physical connection/session, player UUID, negotiated nonce/generation,
+server-selected action and target generations, and an expiry. Disconnect and
+runtime shutdown invalidate contexts; retries receive fresh tokens. A client
+capability is not authorization: every action is checked against the
+authenticated server session, feature capability, bounds, nonce/context/token
+state, and application authorization on the server.
+
+The client owns only rendering, focus, transient UI state, and request input.
+The server owns identity, authentication, locks, target resolution, action
+tokens, KDF work, persistence, item accounting, world mutation, and final
+results. JDBC remains behind `DatabaseExecutor`; asynchronous completion must
+return to the server thread before changing Minecraft state.
+
+Custom `Screen` implementations and resource-pack assets are client presentation
+adapters, not a vanilla GUI fallback. The current vanilla Anvil flow remains in
+place only until the lock-migration phase. Until then, preserve its existing
+reservation, cancellation, fail-closed, password, and exact item-accounting
+behavior.
+
+---
+
+# GUI Delivery Gates
+
+Phase 2 foundation work uses the normal production `jar` output for
+`releaseArtifact` and performs the first production universal-JAR inspection
+after split-source-set and metadata wiring. Gate 2 must inspect the
+expanded `fabric.mod.json`, environment `*`, `main` and `client` entrypoints,
+client classes/resources, mixin configuration, and the included SQLite
+dependency. The 26.3 non-obfuscated lane uses the runtime namespace directly;
+no remapping task is required.
+
+Phase 5 repeats release/artifact validation for the final universal JAR and
+separate resource-pack ZIP; it is not the first proof of packaging correctness.
 
 ---
 
@@ -846,9 +947,16 @@ gh auth login
 ./gradlew release
 ```
 
-Alternatively, authenticate the GitHub CLI with `GH_TOKEN`. The task uses the
-Gradle project version and the normal `jar` archive, so it uploads only
-`build/libs/umbrellaz-${version}.jar`; the sources jar is not published.
+Alternatively, authenticate the GitHub CLI with `GH_TOKEN`. The release
+depends on and builds the normal production `jar` plus the separate
+resource-pack ZIP, then uploads both validated artifacts; the sources jar is not
+published.
+
+The Minecraft 26.3 non-obfuscated lane uses the runtime namespace directly, so
+the normal Gradle `jar` is the production universal artifact and no remapping
+task is required. Final release validation inspects the JAR metadata,
+entrypoints, client classes/resources, mixins, and included SQLite dependency,
+as well as the separate resource-pack artifact.
 
 The default release tag is `v${version}`. Override it when needed with
 `./gradlew -PreleaseTag=v1.2.3 release`. If the tag does not exist, `gh release

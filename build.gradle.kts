@@ -7,8 +7,19 @@ plugins {
     id("net.fabricmc.fabric-loom") version "1.17.21"
 }
 
+loom {
+    splitEnvironmentSourceSets()
+
+    mods {
+        create("umbrellaz") {
+            sourceSet(sourceSets.main.get())
+            sourceSet(sourceSets.getByName("client"))
+        }
+    }
+}
+
 group = "dev.chirana"
-version = "1.4.0"
+version = "1.4.5"
 
 base {
     archivesName = "umbrellaz"
@@ -68,6 +79,8 @@ val resourcePackZip = tasks.register<Zip>("resourcePackZip") {
     isPreserveFileTimestamps = false
 }
 
+val resourcePackArtifact = resourcePackZip.flatMap { it.archiveFile }
+
 tasks.named("build") {
     dependsOn(resourcePackZip)
 }
@@ -79,7 +92,7 @@ val releaseTag = providers.gradleProperty("releaseTag")
 tasks.register<Exec>("release") {
     group = "publishing"
     description = "Builds the project and publishes the main jar as a GitHub release."
-    dependsOn(tasks.named("build"))
+    dependsOn(tasks.named("build"), resourcePackZip)
     outputs.upToDateWhen { false }
     isIgnoreExitValue = true
 
@@ -87,6 +100,10 @@ tasks.register<Exec>("release") {
         val artifact = releaseArtifact.get().asFile
         if (!artifact.isFile) {
             throw GradleException("Release artifact was not found: ${artifact.absolutePath}")
+        }
+        val resourcePack = resourcePackArtifact.get().asFile
+        if (!resourcePack.isFile) {
+            throw GradleException("Resource-pack artifact was not found: ${resourcePack.absolutePath}")
         }
 
         val ghAvailable = System.getenv("PATH")
@@ -112,6 +129,7 @@ tasks.register<Exec>("release") {
             "create",
             tag,
             artifact.absolutePath,
+            resourcePack.absolutePath,
             "--title",
             "Umbrellaz ${project.version}",
             "--generate-notes"

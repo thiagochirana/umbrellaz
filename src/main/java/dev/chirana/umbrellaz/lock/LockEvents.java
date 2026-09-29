@@ -1,12 +1,21 @@
 package dev.chirana.umbrellaz.lock;
 
+import dev.chirana.umbrellaz.auth.AuthEvents;
 import dev.chirana.umbrellaz.authorization.AuthorizationService;
 import dev.chirana.umbrellaz.infra.db.DatabaseExecutor;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import dev.chirana.umbrellaz.protocol.ActionContextRegistry;
+import dev.chirana.umbrellaz.protocol.LockPromptCancelPayload;
+import dev.chirana.umbrellaz.protocol.LockPromptKind;
+import dev.chirana.umbrellaz.protocol.LockPromptOpenPayload;
+import dev.chirana.umbrellaz.protocol.LockPromptResultCode;
+import dev.chirana.umbrellaz.protocol.LockPromptResultPayload;
+import dev.chirana.umbrellaz.protocol.LockPromptSubmitPayload;
+import dev.chirana.umbrellaz.protocol.ProtocolConstants;
+import dev.chirana.umbrellaz.protocol.ProtocolSessionManager;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
-import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
@@ -26,6 +35,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -40,12 +50,13 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class LockEvents {
     private static final Logger LOGGER = LoggerFactory.getLogger(LockEvents.class);
     static final double VANILLA_BLOCK_INTERACTION_MARGIN = 1.0D;
-    private static volatile LockEvents runtime;
+    private static final AtomicBoolean GLOBAL_CALLBACKS_INSTALLED = new AtomicBoolean();
 
     private final LockService lockService;
     private final LockRepository repository;
     private final DatabaseExecutor databaseExecutor;
     private final AuthorizationService authorizationService;
+    private final ProtocolSessionManager protocol;
     private final LockPlacementTracker placements = new LockPlacementTracker();
     private final LockMarkerService markers;
     private final LockProtection protection;
@@ -53,88 +64,126 @@ public final class LockEvents {
     private final Map<BreakKey, PendingBreak> breakOperations = new ConcurrentHashMap<>();
     private final Map<UUID, CreationReservation> reservations = new ConcurrentHashMap<>();
     private final Map<ReservationKey, UUID> reservationKeys = new ConcurrentHashMap<>();
+    private final Map<UUID, PendingCompensation> pendingCompensations = new ConcurrentHashMap<>();
     private final AtomicBoolean stopping = new AtomicBoolean();
-    private volatile MinecraftServer activeServer;
+    private final Map<ServerPlayer, LockPrompt> prompts = java.util.Collections.synchronizedMap(
+            new java.util.IdentityHashMap<>());
+    private final Map<UUID, LockPrompt> promptsByToken = new ConcurrentHashMap<>();
+    private final Map<PromptSessionKey, LockPrompt> promptsBySession = new ConcurrentHashMap<>();
+    private final Map<UUID, PromptPredecessor> promptPredecessors = new ConcurrentHashMap<>();
+    private final Map<PromptSessionKey, PendingRetry> pendingRetriesBySession = new ConcurrentHashMap<>();
+    private final Map<UUID, PendingRetry> pendingRetriesByToken = new ConcurrentHashMap<>();
+    private static final Duration PROMPT_LIFETIME = Duration.ofMinutes(2);
+    private static final String CREATE_ACTION = "lock.create";
+    private static final String OPEN_ACTION = "lock.confirm.open";
+    private static final String BREAK_ACTION = "lock.confirm.break";
+    private static final String REMOVE_ACTION = "lock.confirm.remove";
 
-    private LockEvents(LockService lockService, LockRepository repository, DatabaseExecutor databaseExecutor,
+    public LockEvents(LockService lockService, LockRepository repository, DatabaseExecutor databaseExecutor,
                        AuthorizationService authorizationService) {
+        this(lockService, repository, databaseExecutor, authorizationService,
+                new ProtocolSessionManager(Set.of(ProtocolConstants.FEATURE_LOCK_GUI)));
+    }
+
+    public LockEvents(LockService lockService, LockRepository repository, DatabaseExecutor databaseExecutor,
+                       AuthorizationService authorizationService, ProtocolSessionManager protocol) {
         this.lockService = Objects.requireNonNull(lockService, "lockService");
         this.repository = Objects.requireNonNull(repository, "repository");
         this.databaseExecutor = Objects.requireNonNull(databaseExecutor, "databaseExecutor");
         this.authorizationService = Objects.requireNonNull(authorizationService, "authorizationService");
+        this.protocol = Objects.requireNonNull(protocol, "protocol");
         this.protection = new LockProtection(lockService.cache(), placements);
         this.markers = new LockMarkerService(lockService.cache());
     }
 
-    public static void register(LockService lockService, LockRepository repository,
-                                DatabaseExecutor databaseExecutor, AuthorizationService authorizationService) {
-        LockEvents events = new LockEvents(lockService, repository, databaseExecutor, authorizationService);
-        runtime = events;
-        UseBlockCallback.EVENT.register(events::useBlock);
-        PlayerBlockBreakEvents.BEFORE.register(events::beforeBreak);
-        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
-            events.cancelReservations(server, handler.player);
-            lockService.disconnect(handler.player.getUUID());
+    public static void installGlobalCallbacks() {
+        if (!GLOBAL_CALLBACKS_INSTALLED.compareAndSet(false, true)) {
+            return;
+        }
+        UseBlockCallback.EVENT.register((player, level, hand, hit) -> {
+            if (!(level instanceof ServerLevel serverLevel)) return InteractionResult.PASS;
+            return dev.chirana.umbrellaz.runtime.ServerRuntimeRegistry.findReady(serverLevel.getServer())
+                    .map(runtime -> runtime.lockEvents().useBlock(player, level, hand, hit))
+                    .orElseGet(() -> LockBlockAdapter.classify(serverLevel.getBlockState(hit.getBlockPos())).isPresent()
+                            ? InteractionResult.FAIL : InteractionResult.PASS);
         });
-        ServerLifecycleEvents.SERVER_STOPPING.register(events::shutdownReservations);
-        ServerLifecycleEvents.SERVER_STARTED.register(server -> {
-            events.activeServer = server;
-            try {
-                LockWorldIdentity.initialize(server);
-                events.markers.reconcileAll(server);
-            } catch (RuntimeException failure) {
-                LOGGER.error("Unable to initialize the lock world identity; lock interactions remain blocked", failure);
-            }
-        });
-        ServerChunkEvents.CHUNK_LOAD.register((level, chunk, wasGenerated) -> events.markers.reconcileChunk(level,
-                chunk.getPos()));
+        PlayerBlockBreakEvents.BEFORE.register((world, player, pos, state, blockEntity) ->
+                !(world instanceof ServerLevel serverLevel)
+                        || dev.chirana.umbrellaz.runtime.ServerRuntimeRegistry.findReady(serverLevel.getServer())
+                        .map(runtime -> runtime.lockEvents().beforeBreak(world, player, pos, state, blockEntity))
+                        .orElse(LockBlockAdapter.classify(state).isEmpty()));
+        ServerChunkEvents.CHUNK_LOAD.register((level, chunk, wasGenerated) ->
+                dev.chirana.umbrellaz.runtime.ServerRuntimeRegistry.findReady(level.getServer())
+                        .ifPresent(runtime -> runtime.lockEvents().markers.reconcileChunk(level, chunk.getPos())));
     }
 
     public static java.util.concurrent.CompletableFuture<Void> loadPlacementSnapshot() {
-        LockEvents events = runtime;
-        if (events == null) {
-            return java.util.concurrent.CompletableFuture.failedFuture(
-                    new IllegalStateException("Lock events are not registered"));
+        return java.util.concurrent.CompletableFuture.failedFuture(
+                new IllegalStateException("A server runtime is required for lock initialization"));
+    }
+
+    public java.util.concurrent.CompletableFuture<Void> loadPlacementSnapshotForRuntime() {
+        return lockService.loadPlacementSnapshot(repository, databaseExecutor, placements);
+    }
+
+    public void initialize(MinecraftServer server) {
+        try {
+            LockWorldIdentity.initialize(server);
+            markers.reconcileAll(server);
+        } catch (RuntimeException failure) {
+            LOGGER.error("Unable to initialize the lock world identity; lock interactions remain blocked", failure);
         }
-        return events.lockService.loadPlacementSnapshot(events.repository, events.databaseExecutor, events.placements);
+    }
+
+    public void disconnect(MinecraftServer server, ServerPlayer player) {
+        for (LockPrompt prompt : promptSnapshot(player)) {
+            removePrompt(prompt);
+            clearPromptAssociations(prompt);
+            protocol.actionContexts().cancel(prompt.context().token(), prompt.context().connectionId(),
+                    prompt.context().playerUuid(), prompt.context().nonce(), prompt.context().generation());
+            cancelPromptReservation(prompt, true);
+            prompt.presentationDeactivate();
+        }
+        for (PendingRetry pendingRetry : List.copyOf(pendingRetriesBySession.values())) {
+            if (pendingRetry.prompt().player() == player) cancelPendingRetry(pendingRetry);
+        }
+        cancelReservations(server, player);
+        lockService.disconnect(player.getUUID());
+    }
+
+    public void reconcileMarkers(MinecraftServer server) {
+        if (!stopping.get()) {
+            markers.reconcileAll(server);
+        }
     }
 
     public static void shutdown(MinecraftServer server) {
-        LockEvents events = runtime;
-        if (events != null) {
-            events.shutdownReservations(server);
-        }
+        dev.chirana.umbrellaz.runtime.ServerRuntimeRegistry.find(server)
+                .ifPresent(runtime -> runtime.lockEvents().shutdownReservations(server));
     }
 
     public static void afterSuccessfulPlacement(Level level, Player player, BlockPos position, BlockState state) {
-        LockEvents events = runtime;
-        if (events != null) {
-            events.recordPlacement(level, player, position, state);
+        if (level instanceof ServerLevel serverLevel) {
+            dev.chirana.umbrellaz.runtime.ServerRuntimeRegistry.findReady(serverLevel.getServer())
+                    .ifPresent(runtime -> runtime.lockEvents().recordPlacement(level, player, position, state));
         }
     }
 
     public static boolean beforePlacement(Level level, Player player, BlockPos position, BlockState state) {
-        LockEvents events = runtime;
-        return events == null ? LockBlockAdapter.classify(state).isEmpty()
-                : events.allowPlacement(level, player, position, state);
+        if (!(level instanceof ServerLevel serverLevel)) return true;
+        return dev.chirana.umbrellaz.runtime.ServerRuntimeRegistry.findReady(serverLevel.getServer())
+                .map(runtime -> runtime.lockEvents().allowPlacement(level, player, position, state))
+                .orElse(LockBlockAdapter.classify(state).isEmpty());
     }
 
     public static void reconcileMarkers() {
-        LockEvents events = runtime;
-        MinecraftServer server = events == null ? null : events.activeServer;
-        if (events != null && server != null) {
-            try {
-                server.execute(() -> events.markers.reconcileAll(server));
-            } catch (RuntimeException ignored) {
-                // The server is stopping; no further entity mutation is permitted.
-            }
-        }
+        // Marker reconciliation is owned by the matching ServerRuntime.
     }
 
     public static LockProtection.Decision environmentalProtection(ServerLevel level, BlockPos position) {
-        LockEvents events = runtime;
-        return events == null ? LockProtection.unavailableDecision(level, position)
-                : events.protection.decision(level, position);
+        return dev.chirana.umbrellaz.runtime.ServerRuntimeRegistry.findReady(level.getServer())
+                .map(runtime -> runtime.lockEvents().protection.decision(level, position))
+                .orElseGet(() -> LockProtection.unavailableDecision(level, position));
     }
 
     public static boolean blocksEnvironmentalMutation(ServerLevel level, BlockPos position) {
@@ -148,7 +197,7 @@ public final class LockEvents {
             return true;
         }
         if (!(level instanceof ServerLevel serverLevel) || !(player instanceof ServerPlayer)
-                || !LockWorldIdentity.isReady() || !placements.isReady() || !lockService.cache().isReady()) {
+                || !LockWorldIdentity.isReady(serverLevel) || !placements.isReady() || !lockService.cache().isReady()) {
             return false;
         }
         if (isBreakPending(serverLevel, position)) {
@@ -174,7 +223,7 @@ public final class LockEvents {
         if (!(level instanceof ServerLevel serverLevel) || !(player instanceof ServerPlayer serverPlayer)) {
             return;
         }
-        if (!LockWorldIdentity.isReady()) {
+        if (!LockWorldIdentity.isReady(serverLevel)) {
             LOGGER.error("Ignoring lock placement because the world identity is unavailable");
             return;
         }
@@ -197,12 +246,15 @@ public final class LockEvents {
         if (!(level instanceof ServerLevel serverLevel) || !(player instanceof ServerPlayer serverPlayer)) {
             return InteractionResult.PASS;
         }
+        if (AuthEvents.isBlocked(serverPlayer)) {
+            return InteractionResult.FAIL;
+        }
         if (isBreakPending(serverLevel, hit.getBlockPos())) {
             return InteractionResult.FAIL;
         }
         Optional<TargetContext> context = resolve(serverLevel, hit.getBlockPos());
         if (context.isEmpty()) {
-            if (!LockWorldIdentity.isReady()
+            if (!LockWorldIdentity.isReady(serverLevel)
                     && LockBlockAdapter.classify(serverLevel.getBlockState(hit.getBlockPos())).isPresent()) {
                 message(serverPlayer, "Lock world identity is unavailable; try again later.");
                 return InteractionResult.FAIL;
@@ -232,6 +284,10 @@ public final class LockEvents {
         ItemStack held = serverPlayer.getItemInHand(hand);
         boolean removalGesture = serverPlayer.isShiftKeyDown() && held.isEmpty();
         LockAction action = removalGesture ? LockAction.REMOVE : LockAction.OPEN;
+        if (!target.completeTopology()) {
+            message(serverPlayer, "The double-chest topology is not fully known; try again.");
+            return InteractionResult.FAIL;
+        }
         LockAccessResult access = lockService.lookupAccess(serverPlayer.getUUID(), target.placements(), action);
         if (access.decision() == LockAccessDecision.NOT_READY) {
             message(serverPlayer, "Lock data is still loading; try again.");
@@ -242,8 +298,8 @@ public final class LockEvents {
                 return InteractionResult.PASS;
             }
             if (LockItem.isMarked(held)) {
-                openCreationMenu(serverPlayer, hand, target);
-                return InteractionResult.SUCCESS;
+                return openPrompt(serverPlayer, LockPromptKind.CREATE, CREATE_ACTION, target, hand)
+                        ? InteractionResult.SUCCESS : InteractionResult.FAIL;
             }
             return InteractionResult.PASS;
         }
@@ -255,8 +311,8 @@ public final class LockEvents {
             }
             return InteractionResult.PASS;
         }
-        openPasswordMenu(serverPlayer, target, action);
-        return InteractionResult.SUCCESS;
+        return openPrompt(serverPlayer, LockPromptKind.CONFIRM, actionName(action), target, null)
+                ? InteractionResult.SUCCESS : InteractionResult.FAIL;
     }
 
     private boolean beforeBreak(Level level, Player player, BlockPos position, BlockState state, BlockEntity blockEntity) {
@@ -265,6 +321,9 @@ public final class LockEvents {
         }
         if (LockBlockAdapter.classify(state).isEmpty()) {
             return true;
+        }
+        if (AuthEvents.isBlocked(serverPlayer)) {
+            return false;
         }
         Optional<LockTarget> worldTarget = LockWorldIdentity.tryTarget(world, position);
         if (worldTarget.isEmpty()) {
@@ -289,7 +348,7 @@ public final class LockEvents {
             if (isBreakPending(worldTarget.get())) {
                 return false;
             }
-            if (!LockWorldIdentity.isReady()
+            if (!LockWorldIdentity.isReady(world)
                     && LockBlockAdapter.classify(world.getBlockState(position)).isPresent()) {
                 message(serverPlayer, "Lock world identity is unavailable; try again later.");
                 return false;
@@ -326,86 +385,363 @@ public final class LockEvents {
                 || access.decision() == LockAccessDecision.GRANTED) {
             beginAuthorizedBreak(serverPlayer, target, true);
         } else {
-            openPasswordMenu(serverPlayer, target, LockAction.BREAK);
+            if (!openPrompt(serverPlayer, LockPromptKind.CONFIRM, BREAK_ACTION, target, null)) {
+                return false;
+            }
         }
         return false;
     }
 
-    private void openCreationMenu(ServerPlayer player, InteractionHand hand, TargetContext target) {
-        MinecraftServer server = server(player);
-        UUID playerUuid = player.getUUID();
-        Object menuToken = new Object();
-        AtomicBoolean submitted = new AtomicBoolean();
-        player.openMenu(new net.minecraft.world.SimpleMenuProvider((id, inventory, ignored) ->
-                        new LockAnvilMenu(id, inventory, playerUuid, menuToken,
-                                current -> current == player && isCreationContextValid(current, hand, target),
-                                password -> {
-                                    if (submitted.compareAndSet(false, true)) {
-                                        submitCreation(server, player, hand, target, password, submitted);
-                                    }
-                                }),
-                Component.literal("Cadeado")));
+    private boolean openPrompt(ServerPlayer player, LockPromptKind kind, String action,
+                               TargetContext target, InteractionHand hand) {
+        if (stopping.get() || AuthEvents.isBlocked(player) || !protocol.isCompatible(player)
+                || !ServerPlayNetworking.canSend(player, LockPromptOpenPayload.TYPE)) {
+            return false;
+        }
+        UUID bindingId = UUID.randomUUID();
+        Optional<ActionContextRegistry.Context> opened = protocol.openContext(player, action,
+                bindingId.toString(), PROMPT_LIFETIME);
+        if (opened.isEmpty()) return false;
+        CreationPresentationGuard presentation = kind == LockPromptKind.CREATE
+                ? new CreationPresentationGuard() : null;
+        if (presentation != null) presentation.useCustomPrompt();
+        LockPrompt prompt = new LockPrompt(player, player.getUUID(), kind, action, bindingId,
+                opened.get(), target, hand, presentation);
+        replacePrompt(player, prompt);
+        ServerPlayNetworking.send(player, new LockPromptOpenPayload(prompt.token(), kind));
+        return true;
     }
 
-    private void submitCreation(MinecraftServer server, ServerPlayer menuPlayer, InteractionHand hand,
-                                TargetContext target,
-                                String password, AtomicBoolean submitted) {
-        UUID playerUuid = menuPlayer.getUUID();
-        ServerPlayer player = activePlayer(server, playerUuid);
-        if (stopping.get() || player != menuPlayer || !target.completeTopology()
-                || !isCreationContextValid(player, hand, target)) {
-            submitted.set(false);
-            messageIfValid(server, playerUuid, target, "This lock target is no longer valid.");
+    /** Entry point for the global typed lock-submit receiver. Must run on the server thread. */
+    public void handlePromptSubmit(ServerPlayer player, LockPromptSubmitPayload payload) {
+        if (player == null || payload == null || stopping.get()) return;
+        Optional<ActionContextRegistry.Context> claimed = protocol.claimContext(player, payload.contextToken());
+        LockPrompt prompt = promptsByToken.get(payload.contextToken());
+        if (claimed.isEmpty()) {
+            if (prompt != null && prompt.player() == player) invalidatePrompt(prompt, true);
             return;
         }
-        if (!new PasswordPolicy().isValid(password)) {
-            submitted.set(false);
-            message(player, "Password must be one letter followed by three digits.");
+        if (prompt == null || prompt.player() != player || prompt.context() != claimed.get()
+                || !prompt.action().equals(claimed.get().action())
+                || !prompt.bindingId().toString().equals(claimed.get().target())) {
+            if (prompt != null && prompt.player() == player) invalidatePrompt(prompt, true);
+            else protocol.actionContexts().complete(claimed.get());
             return;
         }
-        CreationReservation reservation = reserveCreation(server, player, hand, target);
-        if (reservation == null) {
-            submitted.set(false);
-            message(player, "The lock item is no longer available for this target.");
+        if (!isPromptTargetValid(player, prompt)) {
+            invalidatePrompt(prompt, true);
             return;
         }
-        lockService.createPasswordAsync(password).whenComplete((hash, failure) -> {
-            if (stopping.get() || reservation.cancelled().get()) {
+        if (prompt.kind() == LockPromptKind.CREATE) submitPromptCreation(player, prompt, payload.password());
+        else submitPromptPassword(player, prompt, payload.password());
+    }
+
+    /** Entry point for the global typed lock-cancel receiver. Must run on the server thread. */
+    public void handlePromptCancel(ServerPlayer player, LockPromptCancelPayload payload) {
+        if (player == null || payload == null) return;
+        LockPrompt prompt = promptsByToken.get(payload.contextToken());
+        if (prompt == null) {
+            PendingRetry pendingRetry = pendingRetriesByToken.get(payload.contextToken());
+            if (pendingRetry != null) {
+                if (!protocol.isCompatible(player) || !pendingRetry.matches(player)) return;
+                cancelPendingRetry(pendingRetry);
                 return;
             }
-            try {
-                server.execute(() -> {
-                    if (stopping.get() || reservation.cancelled().get()) {
-                        return;
-                    }
-                    if (failure != null) {
-                        submitted.set(false);
-                        restoreReservation(server, reservation);
-                        messageIfValid(server, playerUuid, target,
-                                "Unable to create the lock password; try again.");
-                        return;
-                    }
-                    ServerPlayer current = activePlayer(server, playerUuid);
-                    if (!reservationValid(current, reservation)) {
-                        submitted.set(false);
-                        restoreReservation(server, reservation);
-                        messageIfValid(server, playerUuid, target,
-                                "The target or lock item changed before confirmation.");
-                        return;
-                    }
-                    UUID lockerId = UUID.randomUUID();
-                    LockerMetadata locker = new LockerMetadata(lockerId, playerUuid, hash,
-                            Instant.now(), Instant.now(), 1, members(lockerId, target));
-                    createLocker(server, reservation, locker, submitted);
-                });
-            } catch (RuntimeException dispatchFailure) {
-                LOGGER.warn("Unable to dispatch lock creation completion for {}", playerUuid, dispatchFailure);
+            PromptPredecessor predecessor = promptPredecessors.get(payload.contextToken());
+            if (predecessor == null || !predecessor.matches(player)) return;
+            prompt = promptsBySession.get(predecessor.sessionKey());
+            if (prompt == null || prompt.player() != player
+                    || !predecessor.matches(prompt.context())) return;
+        }
+        if (prompt.player() != player) return;
+        ActionContextRegistry.Context context = prompt.context();
+        boolean cancelled = protocol.isCompatible(player)
+                && protocol.actionContexts().cancel(context.token(), context.connectionId(),
+                context.playerUuid(), context.nonce(), context.generation());
+        if (cancelled || context.state() == ActionContextRegistry.ContextState.CANCELLED
+                || context.state() == ActionContextRegistry.ContextState.EXPIRED
+                || context.state() == ActionContextRegistry.ContextState.INVALIDATED) {
+            removePrompt(prompt);
+            clearPromptAssociations(prompt);
+            cancelPromptReservation(prompt, true);
+            prompt.presentationDeactivate();
+        }
+    }
+
+    private void submitPromptCreation(ServerPlayer player, LockPrompt prompt, String password) {
+        if (!new PasswordPolicy().isValid(password)) {
+            retryPrompt(prompt, LockPromptResultCode.ERROR, 0,
+                    "Password must be one letter followed by three digits.");
+            return;
+        }
+        MinecraftServer server = server(player);
+        CreationReservation reservation = reserveCreation(server, player, prompt.hand(),
+                prompt.target(), prompt.presentation());
+        if (reservation == null) {
+            invalidatePrompt(prompt, true);
+            return;
+        }
+        prompt.reservation(reservation);
+        lockService.createPasswordAsync(password).whenComplete((hash, failure) -> dispatch(server, () -> {
+            if (!isPromptInFlight(prompt)) {
+                restoreReservation(server, reservation);
+                return;
             }
-        });
+            if (failure != null) {
+                restoreReservation(server, reservation);
+                retryPrompt(prompt, LockPromptResultCode.ERROR, 0,
+                        "Unable to create the lock password; try again.");
+                return;
+            }
+            ServerPlayer current = activePlayer(server, prompt.playerUuid());
+            if (!reservationValid(current, reservation)) {
+                restoreReservation(server, reservation);
+                invalidatePrompt(prompt, true);
+                return;
+            }
+            UUID lockerId = UUID.randomUUID();
+            LockerMetadata locker = new LockerMetadata(lockerId, prompt.playerUuid(), hash,
+                    Instant.now(), Instant.now(), 1, members(lockerId, prompt.target()));
+            createLocker(server, reservation, locker, prompt);
+        }));
+    }
+
+    private void submitPromptPassword(ServerPlayer player, LockPrompt prompt, String password) {
+        LockAction action = actionFor(prompt.action());
+        if (action == null || !prompt.target().completeTopology()) {
+            invalidatePrompt(prompt, true);
+            return;
+        }
+        MinecraftServer server = server(player);
+        lockService.verifyPasswordAsync(player.getUUID(), prompt.target().placements(), action, password)
+                .whenComplete((verification, failure) -> dispatch(server, () -> {
+                    if (!isPromptInFlight(prompt)) {
+                        if (verification != null) lockService.discardPasswordProof(verification.proof());
+                        return;
+                    }
+                    if (failure != null || verification == null) {
+                        retryPrompt(prompt, LockPromptResultCode.ERROR, 0,
+                                "Unable to verify the password; try again.");
+                        return;
+                    }
+                    if (!isPromptTargetValid(activePlayer(server, prompt.playerUuid()), prompt)
+                            || !prompt.target().completeTopology()) {
+                        lockService.discardPasswordProof(verification.proof());
+                        invalidatePrompt(prompt, true);
+                        return;
+                    }
+                    LockAccessResult result = verification.result();
+                    if (result.decision() == LockAccessDecision.GRANTED && verification.hasProof()) {
+                        if (!isPromptTargetValid(activePlayer(server, prompt.playerUuid()), prompt)
+                                || !protocol.actionContexts().complete(prompt.context(), prompt.context().connectionId(),
+                                prompt.context().playerUuid(), prompt.context().nonce(), prompt.context().generation())) {
+                            lockService.discardPasswordProof(verification.proof());
+                            invalidatePrompt(prompt, true);
+                            return;
+                        }
+                        removePrompt(prompt);
+                        clearPromptAssociations(prompt);
+                        prompt.presentationDeactivate();
+                        LockAccessResult committed = lockService.commitPasswordProof(verification.proof());
+                        if (committed.decision() != LockAccessDecision.GRANTED) {
+                            sendResult(player, prompt, LockPromptResultCode.INVALIDATED, 0,
+                                    "The lock target is no longer valid.", null);
+                            return;
+                        }
+                        sendResult(player, prompt, LockPromptResultCode.SUCCESS, 0, "", null);
+                         if (action == LockAction.OPEN) openTarget(player, prompt.target());
+                        else if (action == LockAction.BREAK) beginAuthorizedBreak(player, prompt.target(), true);
+                        else removeLocker(player, prompt.target(), committed.lockerId());
+                        return;
+                    }
+                    lockService.discardPasswordProof(verification.proof());
+                    if (result.decision() == LockAccessDecision.COOLDOWN) {
+                        retryPrompt(prompt, LockPromptResultCode.COOLDOWN, cooldownSeconds(result),
+                                "Too many attempts; wait before trying again.");
+                    } else {
+                        retryPrompt(prompt, LockPromptResultCode.ERROR, 0, switch (result.decision()) {
+                            case VERIFICATION_BUSY -> "Password verification is busy; try again.";
+                            default -> "Wrong password.";
+                        });
+                    }
+                }));
+    }
+
+    private void dispatch(MinecraftServer server, Runnable operation) {
+        try { server.execute(operation); }
+        catch (RuntimeException failure) { LOGGER.warn("Unable to dispatch lock prompt completion", failure); }
+    }
+
+    private boolean isPromptInFlight(LockPrompt prompt) {
+        return !stopping.get() && promptsByToken.get(prompt.token()) == prompt
+                && prompt.context().state() == ActionContextRegistry.ContextState.IN_FLIGHT;
+    }
+
+    private boolean isPromptTargetValid(ServerPlayer player, LockPrompt prompt) {
+        if (player == null || player != prompt.player() || !player.getUUID().equals(prompt.playerUuid())
+                || AuthEvents.isBlocked(player)) return false;
+        if (prompt.kind() == LockPromptKind.CREATE) {
+            return prompt.hand() != null && isCreationContextValid(player, prompt.hand(), prompt.target());
+        }
+        LockAction action = actionFor(prompt.action());
+        return action != null && isContextValid(player, prompt.target())
+                && prompt.target().completeTopology();
+    }
+
+    private void retryPrompt(LockPrompt prompt, LockPromptResultCode code, int cooldownSeconds, String message) {
+        if (!promptsByToken.remove(prompt.token(), prompt)) return;
+        PromptSessionKey sessionKey = prompt.sessionKey();
+        protocol.actionContexts().complete(prompt.context());
+        CreationReservation reservation = prompt.reservation();
+        if (reservation != null && reservation.lockerId().get() != null
+                && !reservation.itemFinalized().get()) {
+            PendingRetry pendingRetry = new PendingRetry(prompt, sessionKey, reservation, code,
+                    cooldownSeconds, message);
+            pendingRetriesBySession.put(sessionKey, pendingRetry);
+            pendingRetriesByToken.put(prompt.token(), pendingRetry);
+            cancelReservation(server(prompt.player()), reservation, false,
+                    () -> finishPendingRetry(pendingRetry), pendingRetry);
+            return;
+        }
+        cancelPromptReservation(prompt, false);
+        openRetryPrompt(prompt, sessionKey, code, cooldownSeconds, message);
+    }
+
+    private void openRetryPrompt(LockPrompt prompt, PromptSessionKey sessionKey,
+                                 LockPromptResultCode code, int cooldownSeconds, String message) {
+        prompt.presentationDeactivate();
+        Optional<ActionContextRegistry.Context> fresh = protocol.openContext(prompt.player(), prompt.action(),
+                prompt.bindingId().toString(), PROMPT_LIFETIME);
+        if (fresh.isEmpty() || !protocol.isCompatible(prompt.player())) {
+            clearPromptAssociations(prompt);
+            sendResult(prompt.player(), prompt, LockPromptResultCode.INVALIDATED, 0,
+                    "This lock prompt is no longer valid.", null);
+            return;
+        }
+        CreationPresentationGuard presentation = prompt.kind() == LockPromptKind.CREATE
+                ? new CreationPresentationGuard() : null;
+        if (presentation != null) presentation.useCustomPrompt();
+        LockPrompt replacement = new LockPrompt(prompt.player(), prompt.playerUuid(), prompt.kind(), prompt.action(),
+                prompt.bindingId(), fresh.get(), prompt.target(), prompt.hand(), presentation);
+        replacePrompt(prompt.player(), replacement);
+        promptPredecessors.put(prompt.token(), new PromptPredecessor(prompt.context(), sessionKey));
+        sendResult(prompt.player(), prompt, code, cooldownSeconds, message, replacement.token());
+    }
+
+    private void finishPendingRetry(PendingRetry pendingRetry) {
+        pendingRetriesByToken.remove(pendingRetry.prompt().token(), pendingRetry);
+        pendingRetriesBySession.remove(pendingRetry.sessionKey(), pendingRetry);
+        if (pendingRetry.cancelled()) {
+            pendingRetry.prompt().presentationDeactivate();
+            return;
+        }
+        openRetryPrompt(pendingRetry.prompt(), pendingRetry.sessionKey(), pendingRetry.code(),
+                pendingRetry.cooldownSeconds(), pendingRetry.message());
+    }
+
+    private void cancelPendingRetry(PendingRetry pendingRetry) {
+        boolean newlyCancelled = pendingRetry.cancel();
+        pendingRetriesByToken.remove(pendingRetry.prompt().token(), pendingRetry);
+        pendingRetriesBySession.remove(pendingRetry.sessionKey(), pendingRetry);
+        if (!newlyCancelled) return;
+        pendingRetry.prompt().presentationDeactivate();
+        cancelReservation(server(pendingRetry.prompt().player()), pendingRetry.reservation(), true,
+                null, pendingRetry);
+    }
+
+    private void invalidatePrompt(LockPrompt prompt, boolean send) {
+        removePrompt(prompt);
+        clearPromptAssociations(prompt);
+        protocol.actionContexts().complete(prompt.context());
+        cancelPromptReservation(prompt, true);
+        prompt.presentationDeactivate();
+        if (send) sendResult(prompt.player(), prompt, LockPromptResultCode.INVALIDATED, 0,
+                "This lock prompt is no longer valid.", null);
+    }
+
+    private void sendResult(ServerPlayer player, LockPrompt prompt, LockPromptResultCode code,
+                            int cooldownSeconds, String message, UUID retryToken) {
+        if (player == null || player.hasDisconnected() || !ServerPlayNetworking.canSend(player, LockPromptResultPayload.TYPE)) return;
+        ServerPlayNetworking.send(player, new LockPromptResultPayload(prompt.token(), code,
+                cooldownSeconds, message, retryToken));
+    }
+
+    private void replacePrompt(ServerPlayer player, LockPrompt prompt) {
+        LockPrompt previous;
+        synchronized (prompts) { previous = prompts.put(player, prompt); }
+        if (previous != null) {
+            promptsByToken.remove(previous.token(), previous);
+            promptsBySession.remove(previous.sessionKey(), previous);
+            clearPromptAssociations(previous);
+            protocol.actionContexts().cancel(previous.context().token(), previous.context().connectionId(),
+                    previous.context().playerUuid(), previous.context().nonce(), previous.context().generation());
+            cancelPromptReservation(previous);
+            previous.presentationDeactivate();
+        }
+        promptsByToken.put(prompt.token(), prompt);
+        promptsBySession.put(prompt.sessionKey(), prompt);
+    }
+
+    private void removePrompt(LockPrompt prompt) {
+        promptsByToken.remove(prompt.token(), prompt);
+        synchronized (prompts) { prompts.remove(prompt.player(), prompt); }
+        promptsBySession.remove(prompt.sessionKey(), prompt);
+    }
+
+    private void clearPromptAssociations(LockPrompt prompt) {
+        promptsBySession.remove(prompt.sessionKey(), prompt);
+        promptPredecessors.entrySet().removeIf(entry -> entry.getValue().sessionKey().equals(prompt.sessionKey()));
+        PendingRetry pendingRetry = pendingRetriesBySession.remove(prompt.sessionKey());
+        if (pendingRetry != null) {
+            pendingRetriesByToken.remove(pendingRetry.prompt().token(), pendingRetry);
+            pendingRetry.cancel();
+        }
+    }
+
+    private List<LockPrompt> promptSnapshot() {
+        synchronized (prompts) { return List.copyOf(prompts.values()); }
+    }
+
+    private List<LockPrompt> promptSnapshot(ServerPlayer player) {
+        synchronized (prompts) {
+            LockPrompt prompt = prompts.get(player);
+            return prompt == null ? List.of() : List.of(prompt);
+        }
+    }
+
+    private void cancelPromptReservation(LockPrompt prompt) {
+        cancelPromptReservation(prompt, false);
+    }
+
+    private void cancelPromptReservation(LockPrompt prompt, boolean dropOnly) {
+        CreationReservation reservation = prompt.reservation();
+        if (reservation != null) cancelReservation(server(prompt.player()), reservation, dropOnly);
+    }
+
+    private static int cooldownSeconds(LockAccessResult result) {
+        long seconds = Math.max(1L, (result.cooldownRemainingNanos() + 999_999_999L) / 1_000_000_000L);
+        return (int) Math.min(ProtocolConstants.MAX_LOCK_PROMPT_COOLDOWN_SECONDS, seconds);
+    }
+
+    private static String actionName(LockAction action) {
+        return switch (action) {
+            case OPEN -> OPEN_ACTION;
+            case BREAK -> BREAK_ACTION;
+            case REMOVE -> REMOVE_ACTION;
+        };
+    }
+
+    private static LockAction actionFor(String action) {
+        return switch (action) {
+            case OPEN_ACTION -> LockAction.OPEN;
+            case BREAK_ACTION -> LockAction.BREAK;
+            case REMOVE_ACTION -> LockAction.REMOVE;
+            default -> null;
+        };
     }
 
     private void createLocker(MinecraftServer server, CreationReservation reservation,
-                              LockerMetadata locker, AtomicBoolean submitted) {
+                              LockerMetadata locker, LockPrompt prompt) {
         reservation.lockerId().set(locker.lockerId());
         lockService.createLockerAsync(repository, databaseExecutor, locker)
                 .whenComplete((ignored, failure) -> {
@@ -420,24 +756,27 @@ public final class LockEvents {
                                 return;
                             }
                     ServerPlayer current = activePlayer(server, reservation.playerUuid());
-                    if (failure != null) {
-                        submitted.set(false);
+                    boolean persistenceSucceeded = failure == null;
+                    boolean completionValid = persistenceSucceeded
+                            && createdReservationValid(current, reservation, locker)
+                            && isPromptInFlight(prompt);
+                    if (CreationCompletionDecision.decide(persistenceSucceeded, completionValid)
+                            == CreationCompletionDecision.Outcome.COMPENSATE) {
                         compensateLocker(server, reservation, locker.lockerId(),
-                                "Unable to save the lock; the item was not consumed.");
-                        return;
-                    }
-                    if (!reservationValid(current, reservation)) {
-                        submitted.set(false);
-                        compensateLocker(server, reservation, locker.lockerId(),
-                                "The target changed before lock creation completed.");
+                                failure == null
+                                        ? null
+                                        : "Unable to save the lock; the item was not consumed.", prompt);
                         return;
                     }
                     reservations.remove(reservation.token(), reservation);
                     reservationKeys.remove(reservation.key(), reservation.token());
                     reservation.itemFinalized().set(true);
-                    current.closeContainer();
+                    reservation.presentation().deactivate();
+                    removePrompt(prompt);
+                    clearPromptAssociations(prompt);
+                    protocol.actionContexts().complete(prompt.context());
+                    sendResult(current, prompt, LockPromptResultCode.SUCCESS, 0, "", null);
                     markers.reconcileTargets(reservation.level(), reservation.target().placements());
-                    message(current, "Cadeado criado.");
                         });
                     } catch (RuntimeException dispatchFailure) {
                         LOGGER.warn("Unable to dispatch lock persistence completion for {}",
@@ -447,13 +786,14 @@ public final class LockEvents {
     }
 
     private CreationReservation reserveCreation(MinecraftServer server, ServerPlayer player,
-                                                 InteractionHand hand, TargetContext target) {
+                                                 InteractionHand hand, TargetContext target,
+                                                 CreationPresentationGuard presentation) {
         if (stopping.get() || player == null) {
             return null;
         }
         ItemStack held = player.getItemInHand(hand);
-        if (!(player.containerMenu instanceof LockAnvilMenu menu)
-                || !LockItem.isMarked(held) || held.getCount() < 1
+        if (!LockItem.isMarked(held) || held.getCount() < 1
+                || !isCreationPresentationValid(player, presentation)
                 || !isCreationContextValid(player, hand, target)) {
             return null;
         }
@@ -463,19 +803,35 @@ public final class LockEvents {
             return null;
         }
         CreationReservation reservation = new CreationReservation(token, player.getUUID(), player, hand,
-                menu, key, target, player.level(), target.clickedPosition(), held.copyWithCount(1),
-                new AtomicBoolean(false), new AtomicBoolean(false), new AtomicReference<>());
+                presentation, key, target, player.level(), target.clickedPosition(), held.copyWithCount(1),
+                new AtomicBoolean(false), new AtomicBoolean(false), new AtomicBoolean(false), new AtomicReference<>());
         reservations.put(token, reservation);
         held.shrink(1);
         return reservation;
     }
 
     private boolean reservationValid(ServerPlayer player, CreationReservation reservation) {
-        return !reservation.cancelled().get() && player != null && player == reservation.session() && player.isAlive()
-                && player.level() == reservation.level()
-                && player.containerMenu == reservation.menu()
-                && reservations.get(reservation.token()) == reservation
+        return reservationIdentityValid(player, reservation)
                 && isCreationTargetValid(player, reservation.target());
+    }
+
+    private boolean createdReservationValid(ServerPlayer player, CreationReservation reservation,
+                                            LockerMetadata locker) {
+        return reservationIdentityValid(player, reservation)
+                && isCreationTargetContextValid(player, reservation.target())
+                && reservation.target().placements().stream()
+                .allMatch(placement -> lockService.cache().resolve(placement)
+                        .map(locker::equals).orElse(false));
+    }
+
+    private boolean reservationIdentityValid(ServerPlayer player, CreationReservation reservation) {
+        return !reservation.cancelled().get() && player != null && player == reservation.session() && player.isAlive()
+                && !AuthEvents.isBlocked(player)
+                && player.level() == reservation.level()
+                && isCreationPresentationValid(player, reservation.presentation())
+                && reservations.get(reservation.token()) == reservation
+                && reservation.item().getCount() == 1
+                && LockItem.isMarked(reservation.item());
     }
 
     private void restoreReservation(MinecraftServer server, CreationReservation reservation) {
@@ -492,9 +848,11 @@ public final class LockEvents {
             return;
         }
         ServerPlayer current = activePlayer(server, reservation.playerUuid());
-        if (!dropOnly && current != null && current == reservation.session()
-                && current.containerMenu == reservation.menu()
-                && isContextValid(current, reservation.target())) {
+        boolean presentationValid = reservation.presentation().isActive()
+                && current != null
+                && current == reservation.session()
+                && isCreationPresentationValid(current, reservation.presentation());
+        if (!dropOnly && presentationValid && isContextValid(current, reservation.target())) {
             ItemStack restored = reservation.item().copy();
             if (!current.getInventory().add(restored)) {
                 current.drop(restored, false, net.minecraft.util.Prediction.SERVER_ONLY);
@@ -512,111 +870,125 @@ public final class LockEvents {
         }
     }
 
-    private void shutdownReservations(MinecraftServer server) {
+    public void shutdownReservations(MinecraftServer server) {
         stopping.set(true);
+        for (PendingRetry pendingRetry : List.copyOf(pendingRetriesBySession.values())) {
+            cancelPendingRetry(pendingRetry);
+        }
+        for (LockPrompt prompt : promptSnapshot()) {
+            removePrompt(prompt);
+            clearPromptAssociations(prompt);
+            protocol.actionContexts().cancel(prompt.context().token(), prompt.context().connectionId(),
+                    prompt.context().playerUuid(), prompt.context().nonce(), prompt.context().generation());
+            cancelPromptReservation(prompt, true);
+            prompt.presentationDeactivate();
+        }
         for (CreationReservation reservation : List.copyOf(reservations.values())) {
             cancelReservation(server, reservation, true);
         }
     }
 
     private void cancelReservation(MinecraftServer server, CreationReservation reservation, boolean dropOnly) {
-        if (!reservation.cancelled().compareAndSet(false, true)) {
-            return;
-        }
-        restoreReservation(server, reservation, dropOnly);
+        cancelReservation(server, reservation, dropOnly, null);
+    }
+
+    private void cancelReservation(MinecraftServer server, CreationReservation reservation, boolean dropOnly,
+                                   Runnable onCompensated) {
+        cancelReservation(server, reservation, dropOnly, onCompensated, null);
+    }
+
+    private void cancelReservation(MinecraftServer server, CreationReservation reservation, boolean dropOnly,
+                                   Runnable onCompensated, PendingRetry pendingRetry) {
+        if (reservation.itemFinalized().get()) return;
+        reservation.cancelled().set(true);
         UUID lockerId = reservation.lockerId().get();
         if (lockerId != null) {
-            compensateLocker(server, reservation, lockerId, null);
+            compensateLocker(server, reservation, lockerId, null, null, dropOnly, onCompensated, pendingRetry);
+        } else {
+            restoreReservation(server, reservation, dropOnly);
+            if (onCompensated != null) onCompensated.run();
         }
     }
 
     private void compensateLocker(MinecraftServer server, CreationReservation reservation, UUID lockerId,
-                                  String message) {
-        lockService.removeLockerAsync(repository, databaseExecutor, lockerId, reservation.target().placements())
-                .whenComplete((ignored, failure) -> {
-                    if (failure != null) {
-                        LOGGER.error("Unable to compensate stale lock creation for {}", lockerId, failure);
-                    }
-                    if (stopping.get() || reservation.cancelled().get() || message == null) {
-                        return;
-                    }
+                                   String message) {
+        compensateLocker(server, reservation, lockerId, message, null, false, null, null);
+    }
+
+    private void compensateLocker(MinecraftServer server, CreationReservation reservation, UUID lockerId,
+                                   String message, LockPrompt prompt) {
+        compensateLocker(server, reservation, lockerId, message, prompt, false, null, null);
+    }
+
+    private void compensateLocker(MinecraftServer server, CreationReservation reservation, UUID lockerId,
+                                   String message, LockPrompt prompt, boolean dropOnly,
+                                   Runnable onCompensated, PendingRetry pendingRetry) {
+        if (reservation.itemFinalized().get()) return;
+        reservation.cancelled().set(true);
+        PendingCompensation pending = new PendingCompensation(server, reservation, lockerId, message, prompt,
+                dropOnly, onCompensated, pendingRetry);
+        PendingCompensation existing = pendingCompensations.putIfAbsent(reservation.token(), pending);
+        attemptCompensation(existing == null ? pending : existing);
+    }
+
+    private void attemptCompensation(PendingCompensation pending) {
+        CreationReservation reservation = pending.reservation();
+        if (!reservation.compensationStarted().compareAndSet(false, true)) return;
+        lockService.removeLockerAsync(repository, databaseExecutor, pending.lockerId(),
+                        pending.reservation().target().placements())
+                .whenComplete((removed, failure) -> {
                     try {
-                        server.execute(() -> {
-                            if (failure != null) {
-                                return;
-                            }
-                            restoreReservation(server, reservation);
-                            messageIfValid(server, reservation.playerUuid(), reservation.target(), message);
-                        });
+                        pending.server().execute(() -> finishCompensation(pending, removed, failure));
                     } catch (RuntimeException dispatchFailure) {
-                        LOGGER.warn("Unable to dispatch lock compensation completion for {}", lockerId,
-                                dispatchFailure);
+                        reservation.compensationStarted().set(false);
+                        LOGGER.warn("Unable to dispatch lock compensation completion for {}",
+                                pending.lockerId(), dispatchFailure);
                     }
                 });
     }
 
-    private void openPasswordMenu(ServerPlayer player, TargetContext target, LockAction action) {
-        MinecraftServer server = server(player);
-        UUID playerUuid = player.getUUID();
-        Object menuToken = new Object();
-        AtomicBoolean submitted = new AtomicBoolean();
-        player.openMenu(new net.minecraft.world.SimpleMenuProvider((id, inventory, ignored) ->
-                        new LockAnvilMenu(id, inventory, playerUuid, menuToken,
-                                current -> current == player && isContextValid(current, target)
-                                        && (action == LockAction.OPEN || target.completeTopology()),
-                                password -> {
-                                    if (submitted.compareAndSet(false, true)) {
-                                        submitPassword(server, player, menuToken, target, action, password, submitted);
-                                    }
-                                }),
-                Component.literal("Cadeado")));
-    }
-
-    private void submitPassword(MinecraftServer server, ServerPlayer menuPlayer, Object menuToken,
-                                TargetContext target, LockAction action,
-                                String password, AtomicBoolean submitted) {
-        UUID playerUuid = menuPlayer.getUUID();
-        if (activePlayer(server, playerUuid) != menuPlayer || !hasMenu(menuPlayer, menuToken)
-                || !isContextValid(menuPlayer, target)
-                || (action != LockAction.OPEN && !target.completeTopology())) {
-            submitted.set(false);
+    private void finishCompensation(PendingCompensation pending, Boolean removed, Throwable failure) {
+        CreationReservation reservation = pending.reservation();
+        boolean confirmedAbsent = !Boolean.TRUE.equals(removed)
+                && failure == null && compensationCacheConfirmsAbsent(pending);
+        if (failure != null || (!Boolean.TRUE.equals(removed) && !confirmedAbsent)) {
+            reservation.compensationStarted().set(false);
+            if (failure != null) {
+                LOGGER.error("Unable to compensate stale lock creation for {}", pending.lockerId(), failure);
+            }
             return;
         }
-        lockService.confirmPassword(playerUuid, target.placements(), action, password)
-                .whenComplete((result, failure) -> server.execute(() -> {
-                    ServerPlayer player = activePlayer(server, playerUuid);
-                    if (player == null || player != menuPlayer || !hasMenu(player, menuToken)
-                            || !isContextValid(player, target)
-                            || (action != LockAction.OPEN && !target.completeTopology())) {
-                        submitted.set(false);
-                        return;
-                    }
-                    if (failure != null) {
-                        submitted.set(false);
-                        message(player, "Unable to verify the password; try again.");
-                        return;
-                    }
-                    if (result.decision() == LockAccessDecision.GRANTED) {
-                        player.closeContainer();
-                        if (action == LockAction.OPEN) {
-                            openVanillaTarget(player, target);
-                        } else if (action == LockAction.BREAK) {
-                            beginAuthorizedBreak(player, target, true);
-                        } else {
-                            removeLocker(player, target, result.lockerId());
-                        }
-                        return;
-                    }
-                    submitted.set(false);
-                    message(player, switch (result.decision()) {
-                        case COOLDOWN -> "Too many attempts; wait before trying again.";
-                        case VERIFICATION_BUSY -> "Password verification is busy; try again.";
-                        default -> "Wrong password.";
-                    });
-                }));
+        if (!pendingCompensations.remove(reservation.token(), pending)) return;
+        reservation.compensationStarted().set(false);
+        reservation.lockerId().compareAndSet(pending.lockerId(), null);
+        boolean dropOnly = pending.dropOnly()
+                || (pending.retry() != null && pending.retry().cancelled());
+        restoreReservation(pending.server(), reservation, dropOnly);
+        if (pending.onCompensated() != null) pending.onCompensated().run();
+        LockPrompt prompt = pending.prompt();
+        if (prompt != null && promptsByToken.get(prompt.token()) == prompt) {
+            if (pending.message() == null) invalidatePrompt(prompt, true);
+            else retryPrompt(prompt, LockPromptResultCode.ERROR, 0, pending.message());
+            return;
+        }
+        if (pending.message() != null) {
+            messageIfValid(pending.server(), reservation.playerUuid(), reservation.target(),
+                    pending.message());
+        }
     }
 
-    private void openVanillaTarget(ServerPlayer player, TargetContext target) {
+    private boolean compensationCacheConfirmsAbsent(PendingCompensation pending) {
+        if (!lockService.cache().isReady()) return false;
+        return lockService.cache().lockers().stream()
+                .noneMatch(locker -> pending.lockerId().equals(locker.lockerId()));
+    }
+
+    public void tick(MinecraftServer server) {
+        if (server == null) return;
+        for (PendingCompensation pending : List.copyOf(pendingCompensations.values())) attemptCompensation(pending);
+    }
+
+    private void openTarget(ServerPlayer player, TargetContext target) {
         if (!isContextValid(player, target)) {
             message(player, "The target changed before it could be opened.");
             return;
@@ -798,17 +1170,22 @@ public final class LockEvents {
     }
 
     private boolean isCreationTargetValid(ServerPlayer player, TargetContext expected) {
-        return player != null && player.isAlive() && expected.completeTopology()
-                && lockService.cache().isReady() && player.level() == expected.level()
-                && player.level() instanceof ServerLevel serverLevel
-                && resolve(serverLevel, playerPosition(expected)).map(expected::sameMembers).orElse(false)
-                && isWithinInteractionRange(player, expected)
+        return isCreationTargetContextValid(player, expected)
                 && lockService.lookupAccess(player.getUUID(), expected.placements(), LockAction.OPEN).decision()
                 == LockAccessDecision.NOT_LOCKED;
     }
 
+    private boolean isCreationTargetContextValid(ServerPlayer player, TargetContext expected) {
+        return player != null && player.isAlive() && expected.completeTopology()
+                && lockService.cache().isReady() && player.level() == expected.level()
+                && player.level() instanceof ServerLevel serverLevel
+                && resolve(serverLevel, playerPosition(expected)).map(expected::sameMembers).orElse(false)
+                && isWithinInteractionRange(player, expected);
+    }
+
     private boolean isContextValid(ServerPlayer player, TargetContext expected) {
-        return player.isAlive() && player.level() == expected.level()
+        return player != null && player.isAlive() && expected.completeTopology()
+                && player.level() == expected.level()
                 && player.level() instanceof ServerLevel serverLevel
                 && isWithinInteractionRange(player, expected)
                 && resolve(serverLevel, playerPosition(expected))
@@ -816,7 +1193,8 @@ public final class LockEvents {
     }
 
     private boolean isMutationContextValid(ServerPlayer player, TargetContext expected) {
-        return player.isAlive() && player.level() == expected.level()
+        return player != null && player.isAlive() && expected.completeTopology()
+                && player.level() == expected.level()
                 && player.level() instanceof ServerLevel serverLevel
                 && isWithinInteractionRange(player, expected)
                 && resolveForMutation(serverLevel, playerPosition(expected))
@@ -847,8 +1225,9 @@ public final class LockEvents {
         return server.getPlayerList().getPlayer(playerUuid);
     }
 
-    private boolean hasMenu(ServerPlayer player, Object token) {
-        return player.containerMenu instanceof LockAnvilMenu menu && menu.contextToken() == token;
+    private boolean isCreationPresentationValid(ServerPlayer player, CreationPresentationGuard presentation) {
+        return player != null && presentation != null && presentation.isActive()
+                && presentation.isCustomPrompt();
     }
 
     private void dropReturnedItem(ServerLevel level, BlockPos position) {
@@ -905,12 +1284,139 @@ public final class LockEvents {
     }
 
     private record CreationReservation(UUID token, UUID playerUuid, ServerPlayer session,
-                                       InteractionHand hand, LockAnvilMenu menu, ReservationKey key,
-                                       TargetContext target, ServerLevel level,
-                                       BlockPos position, ItemStack item, AtomicBoolean cancelled,
-                                       AtomicBoolean itemFinalized, AtomicReference<UUID> lockerId) {
+                                       InteractionHand hand, CreationPresentationGuard presentation,
+                                       ReservationKey key,
+                                        TargetContext target, ServerLevel level,
+                                        BlockPos position, ItemStack item, AtomicBoolean cancelled,
+                                        AtomicBoolean itemFinalized, AtomicBoolean compensationStarted,
+                                        AtomicReference<UUID> lockerId) {
+    }
+
+    private static final class CreationPresentationGuard {
+        private final AtomicBoolean active = new AtomicBoolean(true);
+        private final AtomicBoolean customPrompt = new AtomicBoolean();
+
+        private boolean isActive() {
+            return active.get();
+        }
+
+        private void useCustomPrompt() {
+            customPrompt.set(true);
+        }
+
+        private boolean isCustomPrompt() {
+            return customPrompt.get();
+        }
+
+        private void deactivate() {
+            active.set(false);
+        }
+    }
+
+    private static final class LockPrompt {
+        private final ServerPlayer player;
+        private final UUID playerUuid;
+        private final LockPromptKind kind;
+        private final String action;
+        private final UUID bindingId;
+        private final ActionContextRegistry.Context context;
+        private final TargetContext target;
+        private final InteractionHand hand;
+        private final CreationPresentationGuard presentation;
+        private final AtomicReference<CreationReservation> reservation = new AtomicReference<>();
+
+        private LockPrompt(ServerPlayer player, UUID playerUuid, LockPromptKind kind, String action,
+                           UUID bindingId, ActionContextRegistry.Context context, TargetContext target,
+                           InteractionHand hand, CreationPresentationGuard presentation) {
+            this.player = player;
+            this.playerUuid = playerUuid;
+            this.kind = kind;
+            this.action = action;
+            this.bindingId = bindingId;
+            this.context = context;
+            this.target = target;
+            this.hand = hand;
+            this.presentation = presentation;
+        }
+
+        private ServerPlayer player() { return player; }
+        private UUID playerUuid() { return playerUuid; }
+        private LockPromptKind kind() { return kind; }
+        private String action() { return action; }
+        private UUID bindingId() { return bindingId; }
+        private ActionContextRegistry.Context context() { return context; }
+        private TargetContext target() { return target; }
+        private InteractionHand hand() { return hand; }
+        private CreationPresentationGuard presentation() { return presentation; }
+        private UUID token() { return context.token(); }
+        private PromptSessionKey sessionKey() {
+            return new PromptSessionKey(context.connectionId(), playerUuid);
+        }
+        private void reservation(CreationReservation value) { reservation.set(value); }
+        private CreationReservation reservation() { return reservation.get(); }
+        private void presentationDeactivate() { if (presentation != null) presentation.deactivate(); }
     }
 
     private record ReservationKey(UUID playerUuid, ServerPlayer session) {
+    }
+
+    private record PromptSessionKey(UUID connectionId, UUID playerUuid) {
+    }
+
+    private record PromptPredecessor(ActionContextRegistry.Context context, PromptSessionKey sessionKey) {
+        private boolean matches(ServerPlayer player) {
+            return player != null && player.getUUID().equals(context.playerUuid())
+                    && player.getUUID().equals(sessionKey.playerUuid());
+        }
+
+        private boolean matches(ActionContextRegistry.Context current) {
+            return current != null && context.connectionId().equals(current.connectionId())
+                    && context.playerUuid().equals(current.playerUuid())
+                    && context.nonce().equals(current.nonce())
+                    && context.generation() == current.generation();
+        }
+    }
+
+    private record PendingCompensation(MinecraftServer server, CreationReservation reservation, UUID lockerId,
+                                       String message, LockPrompt prompt, boolean dropOnly,
+                                       Runnable onCompensated, PendingRetry retry) {
+    }
+
+    private static final class PendingRetry {
+        private final LockPrompt prompt;
+        private final PromptSessionKey sessionKey;
+        private final CreationReservation reservation;
+        private final LockPromptResultCode code;
+        private final int cooldownSeconds;
+        private final String message;
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+
+        private PendingRetry(LockPrompt prompt, PromptSessionKey sessionKey, CreationReservation reservation,
+                             LockPromptResultCode code, int cooldownSeconds, String message) {
+            this.prompt = prompt;
+            this.sessionKey = sessionKey;
+            this.reservation = reservation;
+            this.code = code;
+            this.cooldownSeconds = cooldownSeconds;
+            this.message = message;
+        }
+
+        private boolean matches(ServerPlayer player) {
+            return player == prompt.player() && player.getUUID().equals(prompt.playerUuid())
+                    && prompt.context().connectionId().equals(sessionKey.connectionId())
+                    && prompt.context().playerUuid().equals(sessionKey.playerUuid());
+        }
+
+        private boolean cancel() {
+            return cancelled.compareAndSet(false, true);
+        }
+
+        private boolean cancelled() { return cancelled.get(); }
+        private LockPrompt prompt() { return prompt; }
+        private PromptSessionKey sessionKey() { return sessionKey; }
+        private CreationReservation reservation() { return reservation; }
+        private LockPromptResultCode code() { return code; }
+        private int cooldownSeconds() { return cooldownSeconds; }
+        private String message() { return message; }
     }
 }

@@ -32,112 +32,112 @@ public abstract class ServerPlayNetworkHandlerMixin {
 
     @Inject(method = "handleMovePlayer", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockMovement(ServerboundMovePlayerPacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handlePlayerAction", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockPlayerAction(ServerboundPlayerActionPacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handleContainerClick", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockInventoryClick(ServerboundContainerClickPacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handlePlaceRecipe", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockRecipePlacement(ServerboundPlaceRecipePacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handleEditBook", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockBookEditing(ServerboundEditBookPacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handlePickItemFromBlock", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockPickItemFromBlock(ServerboundPickItemFromBlockPacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handlePickItemFromEntity", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockPickItemFromEntity(ServerboundPickItemFromEntityPacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handleBundleItemSelectedPacket", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockBundleItemSelection(ServerboundSelectBundleItemPacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handleRenameItem", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockItemRenaming(ServerboundRenameItemPacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handleSelectTrade", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockTradeSelection(ServerboundSelectTradePacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handleContainerButtonClick", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockContainerButtonClick(ServerboundContainerButtonClickPacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handleSetBeaconPacket", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockBeaconMutation(ServerboundSetBeaconPacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handleContainerSlotStateChanged", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockContainerSlotStateChange(ServerboundContainerSlotStateChangedPacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handleSetCreativeModeSlot", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockCreativeInventory(ServerboundSetCreativeModeSlotPacket packet, CallbackInfo callbackInfo) {
-        if (AuthEvents.isBlocked(player.getUUID())) {
+        if (AuthEvents.isBlocked(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handleChatCommand", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockCommand(ServerboundChatCommandPacket packet, CallbackInfo callbackInfo) {
-        if (!AuthEvents.isAdministrator(player.getUUID())) {
+        if (!AuthEvents.isAdministrator(player)) {
             callbackInfo.cancel();
         }
     }
 
     @Inject(method = "handleSignedChatCommand", at = @At("HEAD"), cancellable = true)
     private void umbrellaz$blockSignedCommand(ServerboundChatCommandSignedPacket packet, CallbackInfo callbackInfo) {
-        if (!AuthEvents.isAdministrator(player.getUUID())) {
+        if (!AuthEvents.isAdministrator(player)) {
             callbackInfo.cancel();
         }
     }

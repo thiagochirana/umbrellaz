@@ -3,13 +3,14 @@
   "id": "umbrellaz",
   "version": "${version}",
   "name": "Umbrellaz",
-  "description": "Server-side authorization and whitelist management for Fabric.",
+  "description": "Server-authoritative authorization and whitelist management for Fabric.",
   "authors": ["Chirana"],
   "contact": {},
   "license": "All-Rights-Reserved",
-  "environment": "server",
+  "environment": "*",
   "entrypoints": {
-    "main": ["dev.chirana.umbrellaz.Umbrellaz"]
+    "main": ["dev.chirana.umbrellaz.Umbrellaz"],
+    "client": ["dev.chirana.umbrellaz.UmbrellazClient"]
   },
   "mixins": ["umbrellaz.mixins.json"],
   "depends": {
