@@ -25,8 +25,10 @@ public abstract class BlockItemMixin {
     private void umbrellaz$recordSuccessfulPlacement(BlockPlaceContext context, BlockState state,
                                                       CallbackInfoReturnable<Boolean> callbackInfo) {
         if (callbackInfo.getReturnValue()) {
-            BlockPos position = context.getClickedPos();
-            BlocksEvents.afterSuccessfulPlayerPlacement(context.getLevel(), context.getPlayer(), position, state);
+            BlockPos position = BlocksEvents.actualPlacementPosition(context.getClickedPos());
+            BlockState placedState = context.getLevel().getBlockState(position);
+            BlocksEvents.afterSuccessfulPlayerPlacement(context.getLevel(), context.getPlayer(), position, placedState,
+                    context.getItemInHand().getItem());
             LockEvents.afterSuccessfulPlacement(context.getLevel(), context.getPlayer(), position, state);
         }
     }

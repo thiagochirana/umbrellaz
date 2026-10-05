@@ -8,6 +8,8 @@ import java.util.UUID;
 import java.util.function.Predicate;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.BlockTags;
@@ -26,20 +28,14 @@ public final class BlocksService {
     );
 
     private final BlocksRuntimeState runtimeState;
-    private final PlacedLogTracker placedLogTracker;
     private final Set<UUID> processingPlayers = new HashSet<>();
 
     public BlocksService() {
-        this(new BlocksRuntimeState(), new PlacedLogTracker());
+        this(new BlocksRuntimeState());
     }
 
     public BlocksService(BlocksRuntimeState runtimeState) {
-        this(runtimeState, new PlacedLogTracker());
-    }
-
-    public BlocksService(BlocksRuntimeState runtimeState, PlacedLogTracker placedLogTracker) {
         this.runtimeState = runtimeState;
-        this.placedLogTracker = placedLogTracker;
     }
 
     public boolean treeEzBreakEnabled() {
@@ -58,48 +54,60 @@ public final class BlocksService {
         runtimeState.setOresEzBreakEnabled(enabled);
     }
 
-    public void afterSuccessfulPlacement(Level world, Player player, BlockPos position, BlockState placedState) {
-        if (!(world instanceof ServerLevel serverWorld) || !(player instanceof ServerPlayer)) {
-            return;
-        }
-        placedLogTracker.record(serverWorld.dimension(), position, isTreeLog(placedState));
-    }
-
     public void afterSuccessfulBreak(Level world, Player player, BlockPos position, BlockState brokenState) {
         if (!(world instanceof ServerLevel serverWorld) || !(player instanceof ServerPlayer serverPlayer)) {
             return;
         }
-        if (placedLogTracker.remove(serverWorld.dimension(), position)) {
-            return;
-        }
+        boolean shiftHeld = serverPlayer.isShiftKeyDown();
         UUID playerUuid = serverPlayer.getUUID();
         if (!processingPlayers.add(playerUuid)) {
             return;
         }
         try {
-            if (treeEzBreakEnabled() && isTreeLog(brokenState)) {
-                breakConnected(serverWorld, serverPlayer, position, state -> state.is(BlockTags.LOGS), true);
-            } else if (oresEzBreakEnabled() && isOre(brokenState)) {
-                Block oreType = brokenState.getBlock();
+            Block initialBlock = brokenState.getBlock();
+            if (shouldCascadeTreeBreak(treeEzBreakEnabled(), shiftHeld, isTreeLog(brokenState))) {
                 breakConnected(serverWorld, serverPlayer, position,
-                        state -> isOre(state) && state.getBlock() == oreType, false);
+                        state -> isTreeLog(state) && sameBlock(state.getBlock(), initialBlock));
+            } else if (shouldCascadeOreBreak(oresEzBreakEnabled(), shiftHeld, isOre(brokenState))) {
+                breakConnected(serverWorld, serverPlayer, position,
+                        state -> isOre(state) && sameBlock(state.getBlock(), initialBlock));
             }
         } finally {
             processingPlayers.remove(playerUuid);
         }
     }
 
+    static boolean shouldCascadeTreeBreak(boolean enabled, boolean shiftHeld, boolean isTreeLog) {
+        return enabled && shiftHeld && isTreeLog;
+    }
+
+    static boolean shouldCascadeOreBreak(boolean enabled, boolean shiftHeld, boolean isOre) {
+        return enabled && shiftHeld && isOre;
+    }
+
     static boolean isTreeLog(BlockState state) {
-        return state.is(BlockTags.LOGS);
+        return state.is(BlockTags.LOGS)
+                && isRawTreeLogIdentifier(BuiltInRegistries.BLOCK.getKey(state.getBlock()));
+    }
+
+    static boolean isRawTreeLogIdentifier(Identifier identifier) {
+        String path = identifier.getPath();
+        return !path.startsWith("stripped_")
+                && !path.endsWith("_stem")
+                && !path.endsWith("_hyphae");
     }
 
     static boolean isOre(BlockState state) {
         return VANILLA_ORE_TAGS.stream().anyMatch(state::is);
     }
 
+    static boolean sameBlock(Object candidate, Object initialBlock) {
+        return candidate == initialBlock;
+    }
+
     private void breakConnected(ServerLevel world, ServerPlayer player, BlockPos origin,
-                                Predicate<BlockState> accepted, boolean excludePlacedLogs) {
-        List<BlockPos> positions = connectedPositions(world, origin, accepted, excludePlacedLogs);
+                                Predicate<BlockState> accepted) {
+        List<BlockPos> positions = connectedPositions(world, origin, accepted);
         for (BlockPos position : positions) {
             if (accepted.test(world.getBlockState(position))) {
                 player.gameMode.destroyBlock(position);
@@ -108,7 +116,7 @@ public final class BlocksService {
     }
 
     private List<BlockPos> connectedPositions(ServerLevel world, BlockPos origin,
-                                              Predicate<BlockState> accepted, boolean excludePlacedLogs) {
+                                              Predicate<BlockState> accepted) {
         ArrayDeque<BlockPos> queue = new ArrayDeque<>();
         Set<BlockPos> visited = new HashSet<>();
         List<BlockPos> positions = new java.util.ArrayList<>();
@@ -122,10 +130,6 @@ public final class BlocksService {
                 continue;
             }
             BlockState state = world.getBlockState(position);
-            if (excludePlacedLogs && placedLogTracker.shouldSkipTreeTraversal(
-                    world.dimension(), position, isTreeLog(state))) {
-                continue;
-            }
             if (!accepted.test(state)) {
                 continue;
             }

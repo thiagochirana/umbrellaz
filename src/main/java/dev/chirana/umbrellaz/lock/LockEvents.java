@@ -2,6 +2,17 @@ package dev.chirana.umbrellaz.lock;
 
 import dev.chirana.umbrellaz.auth.AuthEvents;
 import dev.chirana.umbrellaz.authorization.AuthorizationService;
+import dev.chirana.umbrellaz.audit.Actor;
+import dev.chirana.umbrellaz.audit.ActorType;
+import dev.chirana.umbrellaz.audit.AuditActions;
+import dev.chirana.umbrellaz.audit.AuditDelivery;
+import dev.chirana.umbrellaz.audit.AuditPayload;
+import dev.chirana.umbrellaz.audit.AuditRecordContext;
+import dev.chirana.umbrellaz.audit.AuditRecordRequest;
+import dev.chirana.umbrellaz.audit.AuditService;
+import dev.chirana.umbrellaz.audit.Outcome;
+import dev.chirana.umbrellaz.audit.Source;
+import dev.chirana.umbrellaz.audit.Target;
 import dev.chirana.umbrellaz.infra.db.DatabaseExecutor;
 import dev.chirana.umbrellaz.protocol.ActionContextRegistry;
 import dev.chirana.umbrellaz.protocol.LockPromptCancelPayload;
@@ -17,7 +28,7 @@ import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -26,6 +37,7 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.Level;
@@ -57,6 +69,7 @@ public final class LockEvents {
     private final DatabaseExecutor databaseExecutor;
     private final AuthorizationService authorizationService;
     private final ProtocolSessionManager protocol;
+    private final AuditService auditService;
     private final LockPlacementTracker placements = new LockPlacementTracker();
     private final LockMarkerService markers;
     private final LockProtection protection;
@@ -78,20 +91,34 @@ public final class LockEvents {
     private static final String OPEN_ACTION = "lock.confirm.open";
     private static final String BREAK_ACTION = "lock.confirm.break";
     private static final String REMOVE_ACTION = "lock.confirm.remove";
+    static final String LOCKED_CHEST_MERGE_MESSAGE = "Destranque o baú para permitir expandi-lo.";
 
     public LockEvents(LockService lockService, LockRepository repository, DatabaseExecutor databaseExecutor,
                        AuthorizationService authorizationService) {
         this(lockService, repository, databaseExecutor, authorizationService,
-                new ProtocolSessionManager(Set.of(ProtocolConstants.FEATURE_LOCK_GUI)));
+                new ProtocolSessionManager(Set.of(ProtocolConstants.FEATURE_LOCK_GUI)), null);
+    }
+
+    public LockEvents(LockService lockService, LockRepository repository, DatabaseExecutor databaseExecutor,
+                       AuthorizationService authorizationService, AuditService auditService) {
+        this(lockService, repository, databaseExecutor, authorizationService,
+                new ProtocolSessionManager(Set.of(ProtocolConstants.FEATURE_LOCK_GUI)), auditService);
     }
 
     public LockEvents(LockService lockService, LockRepository repository, DatabaseExecutor databaseExecutor,
                        AuthorizationService authorizationService, ProtocolSessionManager protocol) {
+        this(lockService, repository, databaseExecutor, authorizationService, protocol, null);
+    }
+
+    public LockEvents(LockService lockService, LockRepository repository, DatabaseExecutor databaseExecutor,
+                       AuthorizationService authorizationService, ProtocolSessionManager protocol,
+                       AuditService auditService) {
         this.lockService = Objects.requireNonNull(lockService, "lockService");
         this.repository = Objects.requireNonNull(repository, "repository");
         this.databaseExecutor = Objects.requireNonNull(databaseExecutor, "databaseExecutor");
         this.authorizationService = Objects.requireNonNull(authorizationService, "authorizationService");
         this.protocol = Objects.requireNonNull(protocol, "protocol");
+        this.auditService = auditService;
         this.protection = new LockProtection(lockService.cache(), placements);
         this.markers = new LockMarkerService(lockService.cache());
     }
@@ -193,10 +220,10 @@ public final class LockEvents {
 
     private boolean allowPlacement(Level level, Player player, BlockPos position, BlockState state) {
         Optional<LockBlockType> type = LockBlockAdapter.classify(state);
-        if (type.isEmpty()) {
+        if (isUnprotectedPlacement(type)) {
             return true;
         }
-        if (!(level instanceof ServerLevel serverLevel) || !(player instanceof ServerPlayer)
+        if (!(level instanceof ServerLevel serverLevel) || !(player instanceof ServerPlayer serverPlayer)
                 || !LockWorldIdentity.isReady(serverLevel) || !placements.isReady() || !lockService.cache().isReady()) {
             return false;
         }
@@ -206,17 +233,13 @@ public final class LockEvents {
         if (cachedProvenance(serverLevel, position).isPresent()) {
             return false;
         }
-        if ((type.get() == LockBlockType.CHEST || type.get() == LockBlockType.TRAPPED_CHEST)
-                && Direction.Plane.HORIZONTAL.stream().anyMatch(direction -> {
-                    BlockPos neighbor = position.relative(direction);
-                    BlockState neighborState = serverLevel.getBlockState(neighbor);
-                    return neighborState.getBlock() == state.getBlock()
-                            && cachedProvenance(serverLevel, neighbor).isPresent();
-                })) {
-            return false;
-        }
         BlockPos connected = LockBlockAdapter.connectedChestPosition(serverLevel, position, state);
-        return connected.equals(position) || cachedProvenance(serverLevel, connected).isEmpty();
+        boolean allowed = allowsCachedPlacement(position, connected,
+                neighbor -> cachedProvenance(serverLevel, neighbor).isPresent());
+        if (!allowed) {
+            message(serverPlayer, LOCKED_CHEST_MERGE_MESSAGE);
+        }
+        return allowed;
     }
 
     private void recordPlacement(Level level, Player player, BlockPos position, BlockState state) {
@@ -256,23 +279,23 @@ public final class LockEvents {
         if (context.isEmpty()) {
             if (!LockWorldIdentity.isReady(serverLevel)
                     && LockBlockAdapter.classify(serverLevel.getBlockState(hit.getBlockPos())).isPresent()) {
-                message(serverPlayer, "Lock world identity is unavailable; try again later.");
+                message(serverPlayer, "A identidade do mundo do cadeado não está disponível. Tente novamente mais tarde.");
                 return InteractionResult.FAIL;
             }
             if (!lockService.cache().isReady()
                     || !placements.isReady()) {
                 if (LockBlockAdapter.classify(serverLevel.getBlockState(hit.getBlockPos())).isPresent()) {
-                    message(serverPlayer, "Lock data is still loading; try again.");
+                    message(serverPlayer, "Os dados dos cadeados ainda estão carregando. Tente novamente.");
                     return InteractionResult.FAIL;
                 }
             }
             if (LockBlockAdapter.classify(serverLevel.getBlockState(hit.getBlockPos())).isPresent()
                     && LockItem.isMarked(serverPlayer.getItemInHand(hand))) {
-                message(serverPlayer, "This block has no valid placement provenance for locking.");
+                message(serverPlayer, "Este bloco não possui um registro de colocação válido para ser trancado.");
                 return InteractionResult.FAIL;
             }
             if (cachedProvenance(serverLevel, hit.getBlockPos()).isPresent()) {
-                message(serverPlayer, "The locked target provenance is no longer valid.");
+                message(serverPlayer, "O registro do alvo trancado não é mais válido.");
                 return InteractionResult.FAIL;
             }
             return InteractionResult.PASS;
@@ -285,12 +308,12 @@ public final class LockEvents {
         boolean removalGesture = serverPlayer.isShiftKeyDown() && held.isEmpty();
         LockAction action = removalGesture ? LockAction.REMOVE : LockAction.OPEN;
         if (!target.completeTopology()) {
-            message(serverPlayer, "The double-chest topology is not fully known; try again.");
+            message(serverPlayer, "A estrutura do baú duplo ainda não foi identificada por completo. Tente novamente.");
             return InteractionResult.FAIL;
         }
         LockAccessResult access = lockService.lookupAccess(serverPlayer.getUUID(), target.placements(), action);
         if (access.decision() == LockAccessDecision.NOT_READY) {
-            message(serverPlayer, "Lock data is still loading; try again.");
+            message(serverPlayer, "Os dados dos cadeados ainda estão carregando. Tente novamente.");
             return InteractionResult.FAIL;
         }
         if (access.decision() == LockAccessDecision.NOT_LOCKED) {
@@ -303,6 +326,9 @@ public final class LockEvents {
             }
             return InteractionResult.PASS;
         }
+        if (shouldPassLockedTargetToVanilla(held.getItem() instanceof BlockItem, access.decision())) {
+            return InteractionResult.PASS;
+        }
         boolean administrator = authorizationService.isAdministrator(serverPlayer.getUUID());
         if (administrator || access.decision() == LockAccessDecision.GRANTED) {
             if (removalGesture) {
@@ -313,6 +339,20 @@ public final class LockEvents {
         }
         return openPrompt(serverPlayer, LockPromptKind.CONFIRM, actionName(action), target, null)
                 ? InteractionResult.SUCCESS : InteractionResult.FAIL;
+    }
+
+    static boolean shouldPassLockedTargetToVanilla(boolean heldBlockItem, LockAccessDecision accessDecision) {
+        return accessDecision == LockAccessDecision.LOCKED
+                && heldBlockItem;
+    }
+
+    static boolean isUnprotectedPlacement(Optional<LockBlockType> type) {
+        return type.isEmpty();
+    }
+
+    static boolean allowsCachedPlacement(BlockPos position, BlockPos connected,
+                                         java.util.function.Predicate<BlockPos> hasCachedProvenance) {
+        return connected.equals(position) || !hasCachedProvenance.test(connected);
     }
 
     private boolean beforeBreak(Level level, Player player, BlockPos position, BlockState state, BlockEntity blockEntity) {
@@ -350,16 +390,16 @@ public final class LockEvents {
             }
             if (!LockWorldIdentity.isReady(world)
                     && LockBlockAdapter.classify(world.getBlockState(position)).isPresent()) {
-                message(serverPlayer, "Lock world identity is unavailable; try again later.");
+                message(serverPlayer, "A identidade do mundo do cadeado não está disponível. Tente novamente mais tarde.");
                 return false;
             }
             if ((!lockService.cache().isReady() || !placements.isReady())
                     && LockBlockAdapter.classify(world.getBlockState(position)).isPresent()) {
-                message(serverPlayer, "Lock data is still loading; try again.");
+                message(serverPlayer, "Os dados dos cadeados ainda estão carregando. Tente novamente.");
                 return false;
             }
             if (cachedProvenance(world, position).isPresent()) {
-                message(serverPlayer, "The locked target provenance is no longer valid.");
+                message(serverPlayer, "O registro do alvo trancado não é mais válido.");
                 return false;
             }
             return true;
@@ -370,7 +410,7 @@ public final class LockEvents {
         }
         LockAccessResult access = lockService.lookupAccess(serverPlayer.getUUID(), target.placements(), LockAction.BREAK);
         if (access.decision() == LockAccessDecision.NOT_READY) {
-            message(serverPlayer, "Lock data is still loading; try again.");
+            message(serverPlayer, "Os dados dos cadeados ainda estão carregando. Tente novamente.");
             return false;
         }
         if (access.decision() == LockAccessDecision.NOT_LOCKED) {
@@ -378,7 +418,7 @@ public final class LockEvents {
             return false;
         }
         if (!target.completeTopology()) {
-            message(serverPlayer, "The double-chest topology is not fully known; try again.");
+            message(serverPlayer, "A estrutura do baú duplo ainda não foi identificada por completo. Tente novamente.");
             return false;
         }
         if (authorizationService.isAdministrator(serverPlayer.getUUID())
@@ -470,31 +510,38 @@ public final class LockEvents {
 
     private void submitPromptCreation(ServerPlayer player, LockPrompt prompt, String password) {
         if (!new PasswordPolicy().isValid(password)) {
+            auditCreate(player, prompt.target(), player.getItemInHand(prompt.hand()),
+                    Outcome.DENIED, "invalid_password");
             retryPrompt(prompt, LockPromptResultCode.ERROR, 0,
-                    "Password must be one letter followed by three digits.");
+                    "A senha deve ter 1 letra ASCII seguida de 3 dígitos ASCII.");
             return;
         }
         MinecraftServer server = server(player);
         CreationReservation reservation = reserveCreation(server, player, prompt.hand(),
                 prompt.target(), prompt.presentation());
         if (reservation == null) {
+            auditCreate(player, prompt.target(), player.getItemInHand(prompt.hand()),
+                    Outcome.FAILURE, "reservation_unavailable");
             invalidatePrompt(prompt, true);
             return;
         }
         prompt.reservation(reservation);
         lockService.createPasswordAsync(password).whenComplete((hash, failure) -> dispatch(server, () -> {
             if (!isPromptInFlight(prompt)) {
+                auditCreateOnce(reservation, Outcome.FAILURE, "prompt_invalidated");
                 restoreReservation(server, reservation);
                 return;
             }
             if (failure != null) {
+                auditCreateOnce(reservation, Outcome.FAILURE, "password_creation_failed");
                 restoreReservation(server, reservation);
                 retryPrompt(prompt, LockPromptResultCode.ERROR, 0,
-                        "Unable to create the lock password; try again.");
+                        "Não foi possível criar a senha do cadeado. Tente novamente.");
                 return;
             }
             ServerPlayer current = activePlayer(server, prompt.playerUuid());
             if (!reservationValid(current, reservation)) {
+                auditCreateOnce(reservation, Outcome.FAILURE, "context_invalidated");
                 restoreReservation(server, reservation);
                 invalidatePrompt(prompt, true);
                 return;
@@ -509,6 +556,7 @@ public final class LockEvents {
     private void submitPromptPassword(ServerPlayer player, LockPrompt prompt, String password) {
         LockAction action = actionFor(prompt.action());
         if (action == null || !prompt.target().completeTopology()) {
+            auditPasswordVerification(player, prompt, Outcome.FAILURE, "invalid_context");
             invalidatePrompt(prompt, true);
             return;
         }
@@ -516,16 +564,19 @@ public final class LockEvents {
         lockService.verifyPasswordAsync(player.getUUID(), prompt.target().placements(), action, password)
                 .whenComplete((verification, failure) -> dispatch(server, () -> {
                     if (!isPromptInFlight(prompt)) {
+                        auditPasswordVerification(player, prompt, Outcome.FAILURE, "prompt_invalidated");
                         if (verification != null) lockService.discardPasswordProof(verification.proof());
                         return;
                     }
                     if (failure != null || verification == null) {
+                        auditPasswordVerification(player, prompt, Outcome.FAILURE, "verification_failed");
                         retryPrompt(prompt, LockPromptResultCode.ERROR, 0,
-                                "Unable to verify the password; try again.");
+                                "Não foi possível verificar a senha. Tente novamente.");
                         return;
                     }
                     if (!isPromptTargetValid(activePlayer(server, prompt.playerUuid()), prompt)
                             || !prompt.target().completeTopology()) {
+                        auditPasswordVerification(player, prompt, Outcome.FAILURE, "target_invalidated");
                         lockService.discardPasswordProof(verification.proof());
                         invalidatePrompt(prompt, true);
                         return;
@@ -544,10 +595,12 @@ public final class LockEvents {
                         prompt.presentationDeactivate();
                         LockAccessResult committed = lockService.commitPasswordProof(verification.proof());
                         if (committed.decision() != LockAccessDecision.GRANTED) {
+                            auditPasswordVerification(player, prompt, Outcome.FAILURE, "target_invalidated");
                             sendResult(player, prompt, LockPromptResultCode.INVALIDATED, 0,
-                                    "The lock target is no longer valid.", null);
+                                    "O alvo do cadeado não é mais válido.", null);
                             return;
                         }
+                        auditPasswordVerification(player, prompt, Outcome.SUCCESS, "verified");
                         sendResult(player, prompt, LockPromptResultCode.SUCCESS, 0, "", null);
                          if (action == LockAction.OPEN) openTarget(player, prompt.target());
                         else if (action == LockAction.BREAK) beginAuthorizedBreak(player, prompt.target(), true);
@@ -556,12 +609,17 @@ public final class LockEvents {
                     }
                     lockService.discardPasswordProof(verification.proof());
                     if (result.decision() == LockAccessDecision.COOLDOWN) {
+                        auditPasswordVerification(player, prompt, Outcome.DENIED, "cooldown");
                         retryPrompt(prompt, LockPromptResultCode.COOLDOWN, cooldownSeconds(result),
-                                "Too many attempts; wait before trying again.");
+                                "Muitas tentativas. Aguarde antes de tentar novamente.");
                     } else {
+                        auditPasswordVerification(player, prompt,
+                                result.decision() == LockAccessDecision.VERIFICATION_BUSY
+                                        ? Outcome.FAILURE : Outcome.DENIED,
+                                passwordResultCode(result.decision()));
                         retryPrompt(prompt, LockPromptResultCode.ERROR, 0, switch (result.decision()) {
-                            case VERIFICATION_BUSY -> "Password verification is busy; try again.";
-                            default -> "Wrong password.";
+                            case VERIFICATION_BUSY -> "A verificação da senha está ocupada. Tente novamente.";
+                            default -> "Senha incorreta.";
                         });
                     }
                 }));
@@ -615,7 +673,7 @@ public final class LockEvents {
         if (fresh.isEmpty() || !protocol.isCompatible(prompt.player())) {
             clearPromptAssociations(prompt);
             sendResult(prompt.player(), prompt, LockPromptResultCode.INVALIDATED, 0,
-                    "This lock prompt is no longer valid.", null);
+                    "Esta solicitação do cadeado não é mais válida.", null);
             return;
         }
         CreationPresentationGuard presentation = prompt.kind() == LockPromptKind.CREATE
@@ -656,7 +714,7 @@ public final class LockEvents {
         cancelPromptReservation(prompt, true);
         prompt.presentationDeactivate();
         if (send) sendResult(prompt.player(), prompt, LockPromptResultCode.INVALIDATED, 0,
-                "This lock prompt is no longer valid.", null);
+                "Esta solicitação do cadeado não é mais válida.", null);
     }
 
     private void sendResult(ServerPlayer player, LockPrompt prompt, LockPromptResultCode code,
@@ -746,12 +804,20 @@ public final class LockEvents {
         lockService.createLockerAsync(repository, databaseExecutor, locker)
                 .whenComplete((ignored, failure) -> {
                     if (stopping.get() || reservation.cancelled().get()) {
-                        compensateLocker(server, reservation, locker.lockerId(), null);
+                        try {
+                            server.execute(() -> {
+                                auditCreateOnce(reservation, Outcome.FAILURE, "cancelled");
+                                compensateLocker(server, reservation, locker.lockerId(), null);
+                            });
+                        } catch (RuntimeException dispatchFailure) {
+                            LOGGER.warn("Unable to dispatch cancelled lock creation completion", dispatchFailure);
+                        }
                         return;
                     }
                     try {
                         server.execute(() -> {
                             if (stopping.get() || reservation.cancelled().get()) {
+                                auditCreateOnce(reservation, Outcome.FAILURE, "cancelled");
                                 compensateLocker(server, reservation, locker.lockerId(), null);
                                 return;
                             }
@@ -762,10 +828,12 @@ public final class LockEvents {
                             && isPromptInFlight(prompt);
                     if (CreationCompletionDecision.decide(persistenceSucceeded, completionValid)
                             == CreationCompletionDecision.Outcome.COMPENSATE) {
+                        auditCreateOnce(reservation, Outcome.FAILURE,
+                                failure == null ? "completion_invalid" : "persistence_failed");
                         compensateLocker(server, reservation, locker.lockerId(),
                                 failure == null
                                         ? null
-                                        : "Unable to save the lock; the item was not consumed.", prompt);
+                                        : "Não foi possível salvar o cadeado; o item não foi consumido.", prompt);
                         return;
                     }
                     reservations.remove(reservation.token(), reservation);
@@ -775,6 +843,7 @@ public final class LockEvents {
                     removePrompt(prompt);
                     clearPromptAssociations(prompt);
                     protocol.actionContexts().complete(prompt.context());
+                    auditCreateOnce(reservation, Outcome.SUCCESS, "created");
                     sendResult(current, prompt, LockPromptResultCode.SUCCESS, 0, "", null);
                     markers.reconcileTargets(reservation.level(), reservation.target().placements());
                         });
@@ -804,7 +873,8 @@ public final class LockEvents {
         }
         CreationReservation reservation = new CreationReservation(token, player.getUUID(), player, hand,
                 presentation, key, target, player.level(), target.clickedPosition(), held.copyWithCount(1),
-                new AtomicBoolean(false), new AtomicBoolean(false), new AtomicBoolean(false), new AtomicReference<>());
+                new AtomicBoolean(false), new AtomicBoolean(false), new AtomicBoolean(false), new AtomicReference<>(),
+                new AtomicBoolean());
         reservations.put(token, reservation);
         held.shrink(1);
         return reservation;
@@ -990,7 +1060,7 @@ public final class LockEvents {
 
     private void openTarget(ServerPlayer player, TargetContext target) {
         if (!isContextValid(player, target)) {
-            message(player, "The target changed before it could be opened.");
+            message(player, "O alvo mudou antes de ser aberto.");
             return;
         }
         BlockPos clicked = target.clickedPosition();
@@ -1001,7 +1071,8 @@ public final class LockEvents {
 
     private void removeLocker(ServerPlayer player, TargetContext target, UUID lockerId) {
         if (!target.completeTopology() || !isContextValid(player, target)) {
-            message(player, "The target changed before removal.");
+            auditLockRemoval(player, target, Outcome.FAILURE, "context_invalid");
+            message(player, "O alvo mudou antes da remoção.");
             return;
         }
         MinecraftServer server = server(player);
@@ -1011,21 +1082,25 @@ public final class LockEvents {
                 .whenComplete((removed, failure) -> server.execute(() -> {
                     ServerPlayer current = activePlayer(server, playerUuid);
                     if (failure != null) {
+                        auditLockRemoval(player, target, Outcome.FAILURE, "persistence_failed");
                         messageIfValid(server, playerUuid, target,
-                                "Unable to remove the lock; nothing was changed.");
+                                "Não foi possível remover o cadeado; nada foi alterado.");
                         return;
                     }
                     if (!Boolean.TRUE.equals(removed)) {
-                        messageIfValid(server, playerUuid, target, "The target changed before removal.");
+                        auditLockRemoval(player, target, Outcome.FAILURE, "target_changed");
+                        messageIfValid(server, playerUuid, target, "O alvo mudou antes da remoção.");
                         return;
                     }
                     markers.reconcileAfterRemoval(originalLevel, target.placements());
                     if (current == null) {
+                        auditLockRemoval(player, target, Outcome.SUCCESS, "removed");
                         dropReturnedItem(originalLevel, target.clickedPosition());
                         return;
                     }
                     if (current != player || !isContextValid(current, target)
                             || !isWithinInteractionRange(current, target)) {
+                        auditLockRemoval(player, target, Outcome.SUCCESS, "removed");
                         dropReturnedItem(originalLevel, target.clickedPosition());
                         return;
                     }
@@ -1033,6 +1108,7 @@ public final class LockEvents {
                     if (!current.getInventory().add(returned)) {
                         current.drop(returned, false, net.minecraft.util.Prediction.SERVER_ONLY);
                     }
+                    auditLockRemoval(player, target, Outcome.SUCCESS, "removed");
                     message(current, "Cadeado removido.");
                 }));
     }
@@ -1042,12 +1118,13 @@ public final class LockEvents {
         if ((requireCompleteTopology && !target.completeTopology())
                 || activePlayer(server, player.getUUID()) != player
                 || !isMutationContextValid(player, target)) {
-            message(player, "The target changed before breaking.");
+            auditLockBreak(player, target, Outcome.FAILURE, "context_invalid");
+            message(player, "O alvo mudou antes da quebra.");
             return;
         }
         BreakKey key = new BreakKey(player.getUUID(), target.clickedPlacement().target(),
                 target.clickedPlacement().generationId());
-        PendingBreak operation = new PendingBreak(key, player, target, new BreakTransaction());
+        PendingBreak operation = new PendingBreak(key, player, target, new BreakTransaction(), new AtomicBoolean());
         if (breakOperations.putIfAbsent(key, operation) != null) {
             return;
         }
@@ -1063,6 +1140,7 @@ public final class LockEvents {
         }
         if (!operation.transaction().markPhysicalDestruction(destroyed)) {
             breakOperations.remove(key, operation);
+            auditBreakOnce(operation, Outcome.FAILURE, "physical_destruction_failed");
             return;
         }
         queueBreakInvalidation(server, operation);
@@ -1072,11 +1150,13 @@ public final class LockEvents {
         lockService.invalidatePlacement(repository, databaseExecutor, operation.target().clickedPlacement())
                 .whenComplete((invalidated, failure) -> {
                     if (failure != null) {
+                        dispatch(server, () -> auditBreakOnce(operation, Outcome.FAILURE, "persistence_failed"));
                         LOGGER.error("Unable to invalidate the destroyed lock generation; break remains pending",
                                 failure);
                         return;
                     }
                     if (!Boolean.TRUE.equals(invalidated)) {
+                        dispatch(server, () -> auditBreakOnce(operation, Outcome.FAILURE, "generation_changed"));
                         LOGGER.error("Destroyed lock generation was no longer current; break remains pending");
                         return;
                     }
@@ -1096,6 +1176,7 @@ public final class LockEvents {
         placements.remove(operation.target().clickedPlacement());
         breakOperations.remove(operation.key(), operation);
         markers.reconcileAfterRemoval(operation.target().level(), operation.target().placements());
+        auditBreakOnce(operation, Outcome.SUCCESS, "broken");
     }
 
     private Optional<TargetContext> resolve(ServerLevel level, BlockPos position) {
@@ -1255,6 +1336,101 @@ public final class LockEvents {
         return player.isWithinBlockInteractionRange(target.clickedPosition(), VANILLA_BLOCK_INTERACTION_MARGIN);
     }
 
+    private void auditCreateOnce(CreationReservation reservation, Outcome outcome, String reasonCode) {
+        if (reservation.auditRecorded().compareAndSet(false, true)) {
+            auditCreate(reservation.session(), reservation.target(), reservation.item(), outcome, reasonCode);
+        }
+    }
+
+    private void auditCreate(ServerPlayer player, TargetContext target, ItemStack item,
+                             Outcome outcome, String reasonCode) {
+        if (player == null || item == null) return;
+        emitAudit(player, AuditActions.LOCK_CREATED, outcome, target, reasonCode,
+                AuditPayload.forAction(AuditActions.LOCK_CREATED,
+                        AuditPayload.itemType(itemType(item)), AuditPayload.count(item.getCount()),
+                        AuditPayload.world(lockWorld(target)), lockPosition(target),
+                        AuditPayload.result(outcome.code())));
+    }
+
+    private void auditPasswordVerification(ServerPlayer player, LockPrompt prompt,
+                                           Outcome outcome, String reasonCode) {
+        if (player == null || prompt == null) return;
+        TargetContext target = prompt.target();
+        emitAudit(player, AuditActions.LOCK_PASSWORD_VERIFY, outcome, target, reasonCode,
+                AuditPayload.forAction(AuditActions.LOCK_PASSWORD_VERIFY,
+                        AuditPayload.world(lockWorld(target)), lockPosition(target),
+                        AuditPayload.result(outcome.code()), AuditPayload.playerUuid(player.getUUID()),
+                        AuditPayload.playerName(player.getName().getString())));
+    }
+
+    private void auditLockRemoval(ServerPlayer player, TargetContext target,
+                                  Outcome outcome, String reasonCode) {
+        emitAudit(player, AuditActions.LOCK_REMOVED, outcome, target, reasonCode,
+                AuditPayload.forAction(AuditActions.LOCK_REMOVED,
+                        AuditPayload.world(lockWorld(target)), lockPosition(target),
+                        AuditPayload.result(outcome.code())));
+    }
+
+    private void auditBreakOnce(PendingBreak operation, Outcome outcome, String reasonCode) {
+        if (operation.auditRecorded().compareAndSet(false, true)) {
+            auditLockBreak(operation.player(), operation.target(), outcome, reasonCode);
+        }
+    }
+
+    private void auditLockBreak(ServerPlayer player, TargetContext target,
+                                Outcome outcome, String reasonCode) {
+        emitAudit(player, AuditActions.LOCK_BREAK, outcome, target, reasonCode,
+                AuditPayload.forAction(AuditActions.LOCK_BREAK,
+                        AuditPayload.blockType(target.clickedPlacement().blockType().name().toLowerCase(java.util.Locale.ROOT)),
+                        AuditPayload.world(lockWorld(target)), lockPosition(target),
+                        AuditPayload.result(outcome.code()), AuditPayload.playerUuid(player.getUUID()),
+                        AuditPayload.playerName(player.getName().getString())));
+    }
+
+    private void emitAudit(ServerPlayer player, String action, Outcome outcome, TargetContext target,
+                           String reasonCode, AuditPayload payload) {
+        if (auditService == null || player == null) return;
+        try {
+            auditService.record(new AuditRecordRequest(
+                    AuditRecordContext.forActor(new Actor(ActorType.PLAYER, player.getUUID(), player.getName().getString())),
+                    Source.LOCK, action, outcome,
+                    new Target("lock", lockTarget(target)), reasonCode, 1, payload,
+                    AuditDelivery.BEST_EFFORT)).exceptionally(failure -> null);
+        } catch (RuntimeException ignored) {
+            // Audit delivery is best effort and must never alter lock behavior.
+        }
+    }
+
+    private static String passwordResultCode(LockAccessDecision decision) {
+        return switch (decision) {
+            case WRONG_PASSWORD -> "wrong_password";
+            case VERIFICATION_BUSY -> "verification_busy";
+            case COOLDOWN -> "cooldown";
+            default -> "verification_denied";
+        };
+    }
+
+    private static AuditPayload.Field lockPosition(TargetContext target) {
+        BlockPos position = target.clickedPosition();
+        return AuditPayload.position(position.getX(), position.getY(), position.getZ());
+    }
+
+    private static String lockWorld(TargetContext target) {
+        LockTarget lockTarget = target.primary().target();
+        return lockTarget.world().value() + ":" + lockTarget.dimension().value();
+    }
+
+    private static String lockTarget(TargetContext target) {
+        LockTarget lockTarget = target.primary().target();
+        BlockPosition position = lockTarget.position();
+        return lockTarget.world().value() + ":" + lockTarget.dimension().value() + ":"
+                + position.x() + "," + position.y() + "," + position.z();
+    }
+
+    private static String itemType(ItemStack item) {
+        return BuiltInRegistries.ITEM.getKey(item.getItem()).toString();
+    }
+
     private record TargetContext(ServerLevel level, BlockPos clickedPosition,
                                  List<PlacementProvenance> placements, boolean completeTopology) {
         private TargetContext {
@@ -1280,16 +1456,16 @@ public final class LockEvents {
     }
 
     private record PendingBreak(BreakKey key, ServerPlayer player, TargetContext target,
-                                BreakTransaction transaction) {
+                                BreakTransaction transaction, AtomicBoolean auditRecorded) {
     }
 
     private record CreationReservation(UUID token, UUID playerUuid, ServerPlayer session,
                                        InteractionHand hand, CreationPresentationGuard presentation,
                                        ReservationKey key,
-                                        TargetContext target, ServerLevel level,
-                                        BlockPos position, ItemStack item, AtomicBoolean cancelled,
-                                        AtomicBoolean itemFinalized, AtomicBoolean compensationStarted,
-                                        AtomicReference<UUID> lockerId) {
+                                         TargetContext target, ServerLevel level,
+                                         BlockPos position, ItemStack item, AtomicBoolean cancelled,
+                                         AtomicBoolean itemFinalized, AtomicBoolean compensationStarted,
+                                         AtomicReference<UUID> lockerId, AtomicBoolean auditRecorded) {
     }
 
     private static final class CreationPresentationGuard {

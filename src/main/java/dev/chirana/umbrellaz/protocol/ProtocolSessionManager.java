@@ -57,7 +57,7 @@ public final class ProtocolSessionManager {
         ServerPlayer player = context.player();
         Session session = sessionFor(player);
         if (session == null || session.player() != player || !session.uuid().equals(player.getUUID())) {
-            disconnect(context.server(), player, "Invalid Umbrellaz handshake.");
+            disconnect(context.server(), player, "Não foi possível validar a conexão do Umbrellaz.");
             return;
         }
 
@@ -69,7 +69,8 @@ public final class ProtocolSessionManager {
         }
         disconnect(context.server(), player,
                 result == ProtocolSessionState.HelloResult.TIMED_OUT
-                        ? "Umbrellaz client required." : "Incompatible Umbrellaz client.");
+                        ? "O cliente Umbrellaz é obrigatório para entrar neste servidor."
+                        : "O cliente Umbrellaz é incompatível com este servidor.");
     }
 
     public boolean isCompatible(ServerPlayer player) {
@@ -97,7 +98,7 @@ public final class ProtocolSessionManager {
         for (Session session : snapshot()) {
             if (session.player().level().getServer() != server) continue;
             if (session.protocolState().expireIfDue(server.getTickCount())) {
-                disconnect(server, session.player(), "Umbrellaz client required.");
+                disconnect(server, session.player(), "O cliente Umbrellaz é obrigatório para entrar neste servidor.");
             }
         }
     }

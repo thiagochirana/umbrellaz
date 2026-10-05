@@ -1,0 +1,109 @@
+---- Minecraft Crash Report ----
+// Ooh. Shiny.
+
+Time: 2026-10-05 19:33:45
+Description: Exception in server tick loop
+
+java.lang.IllegalStateException: Failed to initialize server
+	at knot//net.minecraft.server.MinecraftServer.runServer(MinecraftServer.java:774)
+	at knot//net.minecraft.server.MinecraftServer.lambda$spin$0(MinecraftServer.java:310)
+	at java.base/java.lang.Thread.run(Thread.java:1474)
+
+
+A detailed walkthrough of the error, its code path and all known details is as follows:
+---------------------------------------------------------------------------------------
+
+-- System Details --
+Details:
+	Minecraft Version: 26.3
+	Minecraft Version ID: 26.3
+	Operating System: Linux (amd64) version 6.18.33.2-microsoft-standard-WSL2
+	Java Version: 25.0.2, Oracle Corporation
+	Java VM Version: OpenJDK 64-Bit Server VM (mixed mode, sharing), Oracle Corporation
+	Memory: 277516064 bytes (264 MiB) / 469762048 bytes (448 MiB) up to 4183818240 bytes (3990 MiB)
+	Memory (heap): init: 250MiB, used: 179MiB, committed: 448MiB, max: 3990MiB
+	Memory (non-heap): init: 007MiB, used: 136MiB, committed: 139MiB, max: 000MiB
+	CPUs: 12
+	Processor Vendor: AuthenticAMD
+	Processor Name: AMD Ryzen 5 5600 6-Core Processor
+	Identifier: AuthenticAMD Family 25 Model 33 Stepping 2
+	Microarchitecture: Zen 3
+	Frequency (GHz): -0.00
+	Number of physical packages: 1
+	Number of physical CPUs: 6
+	Number of logical CPUs: 12
+	Graphics card #0 name: Basic Render Driver
+	Graphics card #0 vendor: Microsoft Corporation
+	Graphics card #0 VRAM (MiB): 0.00
+	Graphics card #0 deviceId: unknown
+	Graphics card #0 versionInfo: version: 00
+	Virtual memory max (MiB): 12072.32
+	Virtual memory used (MiB): 6480.19
+	Swap memory total (MiB): 4096.00
+	Swap memory used (MiB): 0.00
+	Space in storage for jna.tmpdir (MiB): <path not set>
+	Space in storage for org.lwjgl.system.SharedLibraryExtractPath (MiB): <path not set>
+	Space in storage for io.netty.native.workdir (MiB): <path not set>
+	Space in storage for java.io.tmpdir (MiB): available: 7952.73, total: 7976.32
+	Space in storage for workdir (MiB): available: 963724.94, total: 1031018.44
+	Operating System Version: GNU/Linux Ubuntu 26.04.1 LTS (Resolute Raccoon) build 6.18.33.2-microsoft-standard-WSL2
+	Process Elevated: false
+	Process Loads: Uptime: 10s, user: 29s (299.31%), kernel: 2s (20.68%), total: 31s (319.99%)
+	Process Virtual Size (MiB): 8885.95
+	Process Resident Size (MiB): 643.39
+	JVM Flags: 0 total; 
+	Debug Flags: 0 total; 
+	Fabric Mods: 
+		fabric-advancement-api-v1: Fabric Advancement API (v1) 1.0.0+38c7a2d55d
+		fabric-api: Fabric API 0.161.0+26.3
+		fabric-api-base: Fabric API Base 2.0.6+fcdff87f5d
+		fabric-api-lookup-api-v1: Fabric API Lookup API (v1) 2.0.24+3434d6d95d
+		fabric-biome-api-v1: Fabric Biome API (v1) 20.0.9+74ed1ea55d
+		fabric-block-api-v1: Fabric Block API (v1) 3.1.0+0ae6f9115d
+		fabric-block-getter-api-v2: Fabric BlockGetter API (v2) 2.0.9+3434d6d95d
+		fabric-command-api-v2: Fabric Command API (v2) 3.1.2+fcdff87f5d
+		fabric-content-registries-v0: Fabric Content Registries (v0) 15.0.4+74ed1ea55d
+		fabric-convention-tags-v2: Fabric Convention Tags (v2) 4.10.3+6b5b47fd5d
+		fabric-crash-report-info-v1: Fabric Crash Report Info (v1) 1.0.7+fcdff87f5d
+		fabric-creative-tab-api-v1: Fabric Creative Tab API (v1) 5.0.21+fcdff87f5d
+		fabric-data-attachment-api-v1: Fabric Data Attachment API (v1) 2.2.30+3434d6d95d
+		fabric-data-generation-api-v1: Fabric Data Generation API (v1) 27.2.4+427eab975d
+		fabric-debug-api-v1: Fabric Debug API (v1) 1.0.4+3434d6d95d
+		fabric-dimensions-v1: Fabric Dimensions API (v1) 5.1.19+47f74c985d
+		fabric-entity-events-v1: Fabric Entity Events (v1) 6.0.4+3434d6d95d
+		fabric-events-interaction-v0: Fabric Events Interaction (v0) 5.3.6+3434d6d95d
+		fabric-game-rule-api-v1: Fabric Game Rule API (v1) 4.0.10+3434d6d95d
+		fabric-gametest-api-v1: Fabric Game Test API (v1) 4.0.32+3434d6d95d
+		fabric-item-api-v1: Fabric Item API (v1) 14.7.0+cf6bc2db5d
+		fabric-lifecycle-events-v1: Fabric Lifecycle Events (v1) 4.1.9+ffef5f675d
+		fabric-loot-api-v3: Fabric Loot API (v3) 4.0.8+4068fd645d
+		fabric-menu-api-v1: Fabric Menu API (v1) 2.0.27+ed66f0a35d
+		fabric-message-api-v1: Fabric Message API (v1) 7.0.10+3434d6d95d
+		fabric-networking-api-v1: Fabric Networking API (v1) 6.3.8+fcdff87f5d
+		fabric-object-builder-api-v1: Fabric Object Builder API (v1) 24.1.9+3434d6d95d
+		fabric-particles-v1: Fabric Particles (v1) 5.0.24+3434d6d95d
+		fabric-permission-api-v1: Fabric Permission API (v1) 1.0.8+fcdff87f5d
+		fabric-recipe-api-v1: Fabric Recipe API (v1) 10.0.8+fcdff87f5d
+		fabric-registry-sync-v0: Fabric Registry Sync (v0) 8.0.1+fcdff87f5d
+		fabric-rendering-fluids-v1: Fabric Rendering Fluids (v1) 6.0.6+3434d6d95d
+		fabric-resource-conditions-api-v1: Fabric Resource Conditions API (v1) 6.1.5+3434d6d95d
+		fabric-resource-loader-v0: Fabric Resource Loader (v0) 3.3.26+4fc5413f5d
+		fabric-resource-loader-v1: Fabric Resource Loader (v1) 3.0.4+fcdff87f5d
+		fabric-serialization-api-v1: Fabric Serialization API (v1) 2.0.7+74ed1ea55d
+		fabric-tag-api-v1: Fabric Tag API (v1) 2.1.10+fcdff87f5d
+		fabric-transfer-api-v1: Fabric Transfer API (v1) 8.0.25+fcdff87f5d
+		fabric-transitive-access-wideners-v1: Fabric Transitive Access Wideners (v1) 8.1.16+52268a0e5d
+		fabricloader: Fabric Loader 0.19.5
+		java: OpenJDK 64-Bit Server VM 25
+		minecraft: Minecraft 26.3
+		mixinextras: MixinExtras 0.5.5
+		umbrellaz: Umbrellaz 1.4.9
+	Server Running: true
+	Active Data Packs: vanilla, fabric-convention-tags-v2, fabric-gametest-api-v1, umbrellaz
+	Available Data Packs: fabric-convention-tags-v2, fabric-gametest-api-v1, minecart_improvements, redstone_experiments, trade_rebalance, umbrellaz, vanilla
+	Enabled Feature Flags: minecraft:vanilla
+	World Generation: Stable
+	World Seed: 6796040071023705647
+	Suppressed Exceptions: ~~NONE~~
+	Is Modded: Definitely; Server brand changed to 'fabric'
+	Type: Dedicated Server

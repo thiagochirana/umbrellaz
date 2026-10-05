@@ -5,18 +5,19 @@ import org.junit.jupiter.api.Test;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.CompletionException;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.component.CustomModelData;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -385,6 +386,35 @@ class LockCoreTest {
     @Test
     void lockEventsUsesTheVanillaInteractionMargin() {
         assertEquals(1.0D, LockEvents.VANILLA_BLOCK_INTERACTION_MARGIN);
+    }
+
+    @Test
+    void blockItemsPassThroughLockedStorageTargetsToVanillaPlacement() {
+        assertTrue(LockEvents.shouldPassLockedTargetToVanilla(true, LockAccessDecision.LOCKED));
+        assertFalse(LockEvents.shouldPassLockedTargetToVanilla(false, LockAccessDecision.LOCKED));
+        assertFalse(LockEvents.shouldPassLockedTargetToVanilla(true, LockAccessDecision.NOT_LOCKED));
+    }
+
+    @Test
+    void separateSingleChestNextToLockedChestIsAllowed() {
+        BlockPos locked = new BlockPos(0, 2, 0);
+        BlockPos candidate = new BlockPos(1, 2, 0);
+
+        assertTrue(LockEvents.allowsCachedPlacement(candidate, candidate, locked::equals));
+    }
+
+    @Test
+    void chestMergeIntoLockedTopologyRemainsRejected() {
+        BlockPos locked = new BlockPos(0, 2, 0);
+        BlockPos candidate = new BlockPos(1, 2, 0);
+
+        assertFalse(LockEvents.allowsCachedPlacement(candidate, locked, locked::equals));
+        assertEquals("Destranque o baú para permitir expandi-lo.", LockEvents.LOCKED_CHEST_MERGE_MESSAGE);
+    }
+
+    @Test
+    void ordinaryNonStorageBlocksAreNotLockPlacementTargets() {
+        assertTrue(LockEvents.isUnprotectedPlacement(Optional.empty()));
     }
 
     @Test

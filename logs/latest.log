@@ -1,0 +1,34 @@
+[20:20:27] [umbrellaz-db/ERROR]: Audit writer became unhealthy after an audit persistence failure
+[20:20:27] [Test worker/WARN]: Audit best-effort events are being dropped because the bounded writer queue is full
+[20:20:27] [Test worker/WARN]: Damage audit bucket capacity reached; dropping summaries (drops=1)
+[20:20:27] [umbrellaz-db/ERROR]: Authorization lookup failed for e76fc65c-24b7-4a2b-bd9d-29f1df4c3af3
+java.util.concurrent.CompletionException: java.lang.IllegalStateException: SQLite operation failed
+	at java.base/java.util.concurrent.CompletableFuture.wrapInCompletionException(CompletableFuture.java:323)
+	at java.base/java.util.concurrent.CompletableFuture.encodeThrowable(CompletableFuture.java:376)
+	at java.base/java.util.concurrent.CompletableFuture.completeThrowable(CompletableFuture.java:391)
+	at java.base/java.util.concurrent.CompletableFuture$UniCompose.tryFire(CompletableFuture.java:1162)
+	at java.base/java.util.concurrent.CompletableFuture.postComplete(CompletableFuture.java:531)
+	at java.base/java.util.concurrent.CompletableFuture.completeExceptionally(CompletableFuture.java:2221)
+	at dev.chirana.umbrellaz.infra.db.DatabaseExecutor$SubmittedTask.run(DatabaseExecutor.java:88)
+	at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1090)
+	at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:614)
+	at java.base/java.lang.Thread.run(Thread.java:1474)
+Caused by: java.lang.IllegalStateException: SQLite operation failed
+	at dev.chirana.umbrellaz.infra.db.sqlite.SQLiteDatabase.withConnection(SQLiteDatabase.java:26)
+	at dev.chirana.umbrellaz.player.PlayerRepository.findByUuid(PlayerRepository.java:45)
+	at dev.chirana.umbrellaz.player.PlayerService.lambda$recordJoin$0(PlayerService.java:29)
+	at dev.chirana.umbrellaz.infra.db.DatabaseExecutor.lambda$submit$0(DatabaseExecutor.java:45)
+	at dev.chirana.umbrellaz.infra.db.DatabaseExecutor$SubmittedTask.run(DatabaseExecutor.java:86)
+	... 3 more
+Caused by: java.nio.file.FileAlreadyExistsException: /tmp/junit-653894785988365386/not-a-directory
+	at java.base/sun.nio.fs.UnixException.translateToIOException(UnixException.java:94)
+	at java.base/sun.nio.fs.UnixException.rethrowAsIOException(UnixException.java:106)
+	at java.base/sun.nio.fs.UnixException.rethrowAsIOException(UnixException.java:111)
+	at java.base/sun.nio.fs.UnixFileSystemProvider.createDirectory(UnixFileSystemProvider.java:418)
+	at java.base/java.nio.file.Files.createDirectory(Files.java:647)
+	at java.base/java.nio.file.Files.createAndCheckIsDirectory(Files.java:734)
+	at java.base/java.nio.file.Files.createDirectories(Files.java:689)
+	at dev.chirana.umbrellaz.infra.db.sqlite.SQLiteDatabase.withConnection(SQLiteDatabase.java:20)
+	... 7 more
+[20:20:27] [umbrellaz-db/WARN]: Authorization audit failed for dee79b35-05c4-4412-8ebb-3fe70b29430c
+[20:20:27] [umbrellaz-db/WARN]: Authorization audit failed for dee79b35-05c4-4412-8ebb-3fe70b29430c

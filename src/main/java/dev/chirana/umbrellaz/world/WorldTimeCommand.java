@@ -5,23 +5,43 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import dev.chirana.umbrellaz.authorization.AuthorizationService;
 import dev.chirana.umbrellaz.authorization.CommandAuthorization;
+import dev.chirana.umbrellaz.audit.Actor;
+import dev.chirana.umbrellaz.audit.ActorType;
+import dev.chirana.umbrellaz.audit.AuditActions;
+import dev.chirana.umbrellaz.audit.AuditDelivery;
+import dev.chirana.umbrellaz.audit.AuditPayload;
+import dev.chirana.umbrellaz.audit.AuditRecordContext;
+import dev.chirana.umbrellaz.audit.AuditRecordRequest;
+import dev.chirana.umbrellaz.audit.AuditService;
+import dev.chirana.umbrellaz.audit.Outcome;
+import dev.chirana.umbrellaz.audit.Source;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class WorldTimeCommand {
+    private static final Logger LOGGER = LoggerFactory.getLogger(WorldTimeCommand.class);
     private static final int DAY = 1000;
     private static final int NOON = 6000;
     private static final int NIGHT = 13000;
     private static final int MIDNIGHT = 18000;
 
     private final AuthorizationService authorizationService;
+    private final AuditService auditService;
 
     public WorldTimeCommand(AuthorizationService authorizationService) {
+        this(authorizationService, null);
+    }
+
+    public WorldTimeCommand(AuthorizationService authorizationService, AuditService auditService) {
         this.authorizationService = authorizationService;
+        this.auditService = auditService;
     }
 
     public void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -49,13 +69,23 @@ public final class WorldTimeCommand {
     }
 
     private int setTime(CommandSourceStack source, int time, String label) {
+        AuditRecordContext auditContext = auditContext(source);
         if (!authorized(source)) {
             source.sendFailure(error("Você não tem autorização Umbrellaz para alterar o tempo."));
+            emit(auditContext, Outcome.DENIED, AuditPayload.forAction(AuditActions.AUTHORIZATION_COMMAND_DENIED,
+                    AuditPayload.permission("world.time.set"), AuditPayload.reasonCode("not_administrator")),
+                    AuditActions.AUTHORIZATION_COMMAND_DENIED);
             return 0;
         }
         for (ServerLevel world : source.getServer().getAllLevels()) {
             world.dimensionTypeRegistration().value().defaultClock()
-                    .ifPresent(clock -> source.getServer().clockManager().setTotalTicks(clock, time));
+                    .ifPresent(clock -> {
+                        source.getServer().clockManager().setTotalTicks(clock, time);
+                        emit(auditContext, Outcome.SUCCESS, AuditPayload.forAction(AuditActions.WORLD_TIME_SET,
+                                AuditPayload.world(world.dimension().identifier().toString()),
+                                AuditPayload.timeOfDay(time), AuditPayload.result("success")),
+                                AuditActions.WORLD_TIME_SET);
+                    });
         }
         source.sendSuccess(() -> Component.empty()
                 .append(successPrefix())
@@ -69,6 +99,29 @@ public final class WorldTimeCommand {
 
     private boolean authorized(CommandSourceStack source) {
         return CommandAuthorization.isAdministrator(source, authorizationService);
+    }
+
+    private AuditRecordContext auditContext(CommandSourceStack source) {
+        if (source.getEntity() instanceof ServerPlayer player) {
+            return AuditRecordContext.forActor(new Actor(ActorType.PLAYER, player.getUUID(),
+                    player.getName().getString()));
+        }
+        return AuditRecordContext.forActor(new Actor(ActorType.CONSOLE, null, null));
+    }
+
+    private void emit(AuditRecordContext context, Outcome outcome, AuditPayload payload, String action) {
+        if (auditService == null) {
+            return;
+        }
+        try {
+            auditService.record(new AuditRecordRequest(context, Source.COMMAND, action, outcome, null, null, 1,
+                    payload, AuditDelivery.BEST_EFFORT)).exceptionally(failure -> {
+                LOGGER.warn("Unable to record world time command audit event", failure);
+                return null;
+            });
+        } catch (RuntimeException failure) {
+            LOGGER.warn("Unable to create world time command audit event", failure);
+        }
     }
 
     private int help(CommandSourceStack source) {

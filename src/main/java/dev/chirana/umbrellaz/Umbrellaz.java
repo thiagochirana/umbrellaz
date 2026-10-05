@@ -2,6 +2,9 @@ package dev.chirana.umbrellaz;
 
 import dev.chirana.umbrellaz.auth.AuthEvents;
 import dev.chirana.umbrellaz.blocks.BlocksEvents;
+import dev.chirana.umbrellaz.death.DeathEvents;
+import dev.chirana.umbrellaz.audit.DamageAuditEvents;
+import dev.chirana.umbrellaz.audit.PlayerWorldChangeAuditEvents;
 import dev.chirana.umbrellaz.lock.LockEvents;
 import dev.chirana.umbrellaz.protocol.LockPromptCancelPayload;
 import dev.chirana.umbrellaz.protocol.LockPromptOpenPayload;
@@ -34,6 +37,9 @@ public final class Umbrellaz implements ModInitializer {
         if (!INSTALLED.compareAndSet(false, true)) return;
         AuthEvents.installGlobalCallbacks();
         BlocksEvents.installGlobalCallbacks();
+        DeathEvents.installGlobalCallbacks();
+        DamageAuditEvents.installGlobalCallbacks();
+        PlayerWorldChangeAuditEvents.installGlobalCallbacks();
         LockEvents.installGlobalCallbacks();
         PayloadTypeRegistry.clientboundPlay().register(UmbrellazHelloPayload.TYPE, UmbrellazHelloPayload.CODEC);
         PayloadTypeRegistry.clientboundPlay().register(LockPromptOpenPayload.TYPE, LockPromptOpenPayload.CODEC);
@@ -60,7 +66,8 @@ public final class Umbrellaz implements ModInitializer {
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             ServerPlayer player = handler.player;
             ServerRuntimeRegistry.find(server).ifPresentOrElse(runtime -> runtime.onJoin(player),
-                    () -> player.connection.disconnect(Component.literal("Umbrellaz is still starting.")));
+                    () -> player.connection.disconnect(Component.literal(
+                            "O Umbrellaz ainda está iniciando. Tente novamente em instantes.")));
         });
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) ->
                 ServerRuntimeRegistry.find(server).ifPresent(runtime -> runtime.onDisconnect(handler.player)));

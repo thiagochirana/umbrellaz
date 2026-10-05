@@ -6,6 +6,15 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import dev.chirana.umbrellaz.authorization.AuthorizationService;
 import dev.chirana.umbrellaz.authorization.CommandAuthorization;
+import dev.chirana.umbrellaz.audit.Actor;
+import dev.chirana.umbrellaz.audit.ActorType;
+import dev.chirana.umbrellaz.audit.AuditActions;
+import dev.chirana.umbrellaz.audit.AuditPayload;
+import dev.chirana.umbrellaz.audit.AuditRecordContext;
+import dev.chirana.umbrellaz.audit.AuditRecordRequest;
+import dev.chirana.umbrellaz.audit.AuditService;
+import dev.chirana.umbrellaz.audit.Outcome;
+import dev.chirana.umbrellaz.audit.Source;
 import dev.chirana.umbrellaz.player.OnlinePlayerResolver;
 import dev.chirana.umbrellaz.player.OnlinePlayerSuggestions;
 import net.minecraft.ChatFormatting;
@@ -15,25 +24,35 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class TeleportCommand {
+    private static final Logger LOGGER = LoggerFactory.getLogger(TeleportCommand.class);
     private final AuthorizationService authorizationService;
     private final OnlinePlayerResolver playerResolver;
     private final OnlinePlayerSuggestions playerSuggestions;
+    private final AuditService auditService;
 
     public TeleportCommand(AuthorizationService authorizationService) {
-        this(authorizationService, new OnlinePlayerResolver(), new OnlinePlayerSuggestions());
+        this(authorizationService, new OnlinePlayerResolver(), new OnlinePlayerSuggestions(), null);
     }
 
     public TeleportCommand(AuthorizationService authorizationService, OnlinePlayerResolver playerResolver) {
-        this(authorizationService, playerResolver, new OnlinePlayerSuggestions());
+        this(authorizationService, playerResolver, new OnlinePlayerSuggestions(), null);
     }
 
     public TeleportCommand(AuthorizationService authorizationService, OnlinePlayerResolver playerResolver,
                            OnlinePlayerSuggestions playerSuggestions) {
+        this(authorizationService, playerResolver, playerSuggestions, null);
+    }
+
+    public TeleportCommand(AuthorizationService authorizationService, OnlinePlayerResolver playerResolver,
+                           OnlinePlayerSuggestions playerSuggestions, AuditService auditService) {
         this.authorizationService = authorizationService;
         this.playerResolver = playerResolver;
         this.playerSuggestions = playerSuggestions;
+        this.auditService = auditService;
     }
 
     public void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -71,22 +90,41 @@ public final class TeleportCommand {
     }
 
     private int teleportSelf(CommandSourceStack source, String destinationName) {
+        AuditRecordContext auditContext = auditContext(source);
         if (!authorized(source)) {
-            deny(source);
+            deny(source, auditContext, "teleport.execute");
             return 0;
         }
         ServerPlayer executor = source.getPlayer();
         if (executor == null) {
+            emit(auditContext, Outcome.FAILURE, AuditPayload.forAction(AuditActions.TELEPORT_EXECUTED,
+                    AuditPayload.result("player_required")));
             source.sendFailure(error("Este formato precisa ser executado por um jogador."));
             return 0;
         }
         var destinationResolution = findPlayer(source.getServer(), destinationName);
         if (destinationResolution.status() != dev.chirana.umbrellaz.player.OnlinePlayerResolution.Status.FOUND) {
+            emit(auditContext, Outcome.FAILURE, AuditPayload.forAction(AuditActions.TELEPORT_EXECUTED,
+                    AuditPayload.result(resolutionCode(destinationResolution.status()))));
             reportResolution(source, destinationName, destinationResolution.status());
             return 0;
         }
         ServerPlayer destination = destinationResolution.player();
-        move(executor, destination);
+        String sourceWorld = worldId(executor.level());
+        int sourceX = executor.blockPosition().getX();
+        int sourceY = executor.blockPosition().getY();
+        int sourceZ = executor.blockPosition().getZ();
+        String targetWorld = worldId(destination.level());
+        int targetX = destination.blockPosition().getX();
+        int targetY = destination.blockPosition().getY();
+        int targetZ = destination.blockPosition().getZ();
+        if (!move(executor, destination)) {
+            emitTeleportFailure(auditContext, sourceWorld, sourceX, sourceY, sourceZ,
+                    targetWorld, targetX, targetY, targetZ);
+            reportTeleportFailure(source);
+            return 0;
+        }
+        emitTeleportSuccess(auditContext, sourceWorld, sourceX, sourceY, sourceZ, executor);
         source.sendSuccess(() -> Component.empty()
                 .append(successPrefix())
                 .append(Component.literal("Você foi teleportado até ").withStyle(ChatFormatting.GREEN))
@@ -96,23 +134,42 @@ public final class TeleportCommand {
     }
 
     private int teleportPlayerToPlayer(CommandSourceStack source, String playerName, String targetName) {
+        AuditRecordContext auditContext = auditContext(source);
         if (!authorized(source)) {
-            deny(source);
+            deny(source, auditContext, "teleport.execute");
             return 0;
         }
         var playerResolution = findPlayer(source.getServer(), playerName);
         if (playerResolution.status() != dev.chirana.umbrellaz.player.OnlinePlayerResolution.Status.FOUND) {
+            emit(auditContext, Outcome.FAILURE, AuditPayload.forAction(AuditActions.TELEPORT_EXECUTED,
+                    AuditPayload.result(resolutionCode(playerResolution.status()))));
             reportResolution(source, playerName, playerResolution.status());
             return 0;
         }
         var targetResolution = findPlayer(source.getServer(), targetName);
         if (targetResolution.status() != dev.chirana.umbrellaz.player.OnlinePlayerResolution.Status.FOUND) {
+            emit(auditContext, Outcome.FAILURE, AuditPayload.forAction(AuditActions.TELEPORT_EXECUTED,
+                    AuditPayload.result(resolutionCode(targetResolution.status()))));
             reportResolution(source, targetName, targetResolution.status());
             return 0;
         }
         ServerPlayer player = playerResolution.player();
         ServerPlayer target = targetResolution.player();
-        move(player, target);
+        String sourceWorld = worldId(player.level());
+        int sourceX = player.blockPosition().getX();
+        int sourceY = player.blockPosition().getY();
+        int sourceZ = player.blockPosition().getZ();
+        String targetWorld = worldId(target.level());
+        int targetX = target.blockPosition().getX();
+        int targetY = target.blockPosition().getY();
+        int targetZ = target.blockPosition().getZ();
+        if (!move(player, target)) {
+            emitTeleportFailure(auditContext, sourceWorld, sourceX, sourceY, sourceZ,
+                    targetWorld, targetX, targetY, targetZ);
+            reportTeleportFailure(source);
+            return 0;
+        }
+        emitTeleportSuccess(auditContext, sourceWorld, sourceX, sourceY, sourceZ, player);
         source.sendSuccess(() -> Component.empty()
                 .append(successPrefix())
                 .append(playerName(playerName))
@@ -123,12 +180,15 @@ public final class TeleportCommand {
     }
 
     private int teleportPlayerToCoordinates(CommandSourceStack source, String playerName, double x, double y, double z) {
+        AuditRecordContext auditContext = auditContext(source);
         if (!authorized(source)) {
-            deny(source);
+            deny(source, auditContext, "teleport.execute");
             return 0;
         }
         var playerResolution = findPlayer(source.getServer(), playerName);
         if (playerResolution.status() != dev.chirana.umbrellaz.player.OnlinePlayerResolution.Status.FOUND) {
+            emit(auditContext, Outcome.FAILURE, AuditPayload.forAction(AuditActions.TELEPORT_EXECUTED,
+                    AuditPayload.result(resolutionCode(playerResolution.status()))));
             reportResolution(source, playerName, playerResolution.status());
             return 0;
         }
@@ -137,7 +197,22 @@ public final class TeleportCommand {
         if (world == null) {
             world = source.getServer().overworld();
         }
-        player.teleportTo(world, x, y, z, java.util.Set.of(), player.getYRot(), player.getXRot(), true);
+        String sourceWorld = worldId(player.level());
+        int sourceX = player.blockPosition().getX();
+        int sourceY = player.blockPosition().getY();
+        int sourceZ = player.blockPosition().getZ();
+        int targetX = coordinate(x);
+        int targetY = coordinate(y);
+        int targetZ = coordinate(z);
+        String targetWorld = worldId(world);
+        boolean teleported = player.teleportTo(world, x, y, z, java.util.Set.of(), player.getYRot(), player.getXRot(), true);
+        if (!teleported) {
+            emitTeleportFailure(auditContext, sourceWorld, sourceX, sourceY, sourceZ,
+                    targetWorld, targetX, targetY, targetZ);
+            reportTeleportFailure(source);
+            return 0;
+        }
+        emitTeleportSuccess(auditContext, sourceWorld, sourceX, sourceY, sourceZ, player);
         source.sendSuccess(() -> Component.empty()
                 .append(successPrefix())
                 .append(playerName(playerName))
@@ -155,8 +230,9 @@ public final class TeleportCommand {
         return playerResolver.resolve(server, name);
     }
 
-    private void move(ServerPlayer player, ServerPlayer target) {
-        player.teleportTo(target.level(), target.getX(), target.getY(), target.getZ(), java.util.Set.of(), target.getYRot(), target.getXRot(), true);
+    private boolean move(ServerPlayer player, ServerPlayer target) {
+        return player.teleportTo(target.level(), target.getX(), target.getY(), target.getZ(),
+                java.util.Set.of(), target.getYRot(), target.getXRot(), true);
     }
 
     private void unknownPlayer(CommandSourceStack source, String name) {
@@ -182,6 +258,88 @@ public final class TeleportCommand {
 
     private void deny(CommandSourceStack source) {
         source.sendFailure(error("Você não tem autorização Umbrellaz para teleportar jogadores."));
+    }
+
+    private void reportTeleportFailure(CommandSourceStack source) {
+        source.sendFailure(error("Não foi possível realizar o teleporte."));
+    }
+
+    private void deny(CommandSourceStack source, AuditRecordContext context, String permission) {
+        deny(source);
+        emit(context, Outcome.DENIED, AuditPayload.forAction(AuditActions.AUTHORIZATION_COMMAND_DENIED,
+                AuditPayload.permission(permission), AuditPayload.reasonCode("not_administrator")),
+                AuditActions.AUTHORIZATION_COMMAND_DENIED);
+    }
+
+    private AuditRecordContext auditContext(CommandSourceStack source) {
+        if (source.getEntity() instanceof ServerPlayer player) {
+            return AuditRecordContext.forActor(new Actor(ActorType.PLAYER, player.getUUID(),
+                    player.getName().getString()));
+        }
+        return AuditRecordContext.forActor(new Actor(ActorType.CONSOLE, null, null));
+    }
+
+    private void emitTeleportSuccess(AuditRecordContext context, String sourceWorld,
+                                     int sourceX, int sourceY, int sourceZ, ServerPlayer player) {
+        ServerLevel finalWorld = player.level();
+        var finalPosition = player.blockPosition();
+        emit(context, Outcome.SUCCESS, AuditPayload.forAction(AuditActions.TELEPORT_EXECUTED,
+                AuditPayload.sourceWorld(sourceWorld), AuditPayload.sourcePosition(sourceX, sourceY, sourceZ),
+                AuditPayload.targetWorld(worldId(finalWorld)),
+                AuditPayload.targetPosition(finalPosition.getX(), finalPosition.getY(), finalPosition.getZ()),
+                AuditPayload.result("success")), AuditActions.TELEPORT_EXECUTED);
+    }
+
+    private void emitTeleportFailure(AuditRecordContext context, String sourceWorld,
+                                     int sourceX, int sourceY, int sourceZ, String targetWorld,
+                                     int targetX, int targetY, int targetZ) {
+        emit(context, Outcome.FAILURE, AuditPayload.forAction(AuditActions.TELEPORT_EXECUTED,
+                AuditPayload.sourceWorld(sourceWorld), AuditPayload.sourcePosition(sourceX, sourceY, sourceZ),
+                AuditPayload.targetWorld(targetWorld), AuditPayload.targetPosition(targetX, targetY, targetZ),
+                AuditPayload.result("teleport_failed")), AuditActions.TELEPORT_EXECUTED);
+    }
+
+    private int coordinate(double value) {
+        double floored = Math.floor(value);
+        if (floored <= Integer.MIN_VALUE) {
+            return Integer.MIN_VALUE;
+        }
+        if (floored >= Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        return (int) floored;
+    }
+
+    private void emit(AuditRecordContext context, Outcome outcome, AuditPayload payload) {
+        emit(context, outcome, payload, AuditActions.TELEPORT_EXECUTED);
+    }
+
+    private void emit(AuditRecordContext context, Outcome outcome, AuditPayload payload, String action) {
+        if (auditService == null) {
+            return;
+        }
+        try {
+            auditService.record(new AuditRecordRequest(context, Source.COMMAND, action, outcome, null, null, 1,
+                    payload, dev.chirana.umbrellaz.audit.AuditDelivery.BEST_EFFORT)).exceptionally(failure -> {
+                LOGGER.warn("Unable to record teleport command audit event", failure);
+                return null;
+            });
+        } catch (RuntimeException failure) {
+            LOGGER.warn("Unable to create teleport command audit event", failure);
+        }
+    }
+
+    private String worldId(ServerLevel world) {
+        return world.dimension().identifier().toString();
+    }
+
+    private String resolutionCode(dev.chirana.umbrellaz.player.OnlinePlayerResolution.Status status) {
+        return switch (status) {
+            case AMBIGUOUS -> "ambiguous";
+            case NOT_READY -> "not_ready";
+            case NOT_FOUND -> "not_found";
+            case FOUND -> "success";
+        };
     }
 
     private int help(CommandSourceStack source) {

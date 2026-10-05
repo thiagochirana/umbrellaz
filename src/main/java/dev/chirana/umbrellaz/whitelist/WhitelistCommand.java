@@ -2,6 +2,16 @@ package dev.chirana.umbrellaz.whitelist;
 
 import dev.chirana.umbrellaz.auth.AuthService;
 import dev.chirana.umbrellaz.auth.AuthEvents;
+import dev.chirana.umbrellaz.audit.Actor;
+import dev.chirana.umbrellaz.audit.ActorType;
+import dev.chirana.umbrellaz.audit.AuditActions;
+import dev.chirana.umbrellaz.audit.AuditDelivery;
+import dev.chirana.umbrellaz.audit.AuditPayload;
+import dev.chirana.umbrellaz.audit.AuditRecordContext;
+import dev.chirana.umbrellaz.audit.AuditRecordRequest;
+import dev.chirana.umbrellaz.audit.AuditService;
+import dev.chirana.umbrellaz.audit.Outcome;
+import dev.chirana.umbrellaz.audit.Source;
 import dev.chirana.umbrellaz.authorization.AuthorizationService;
 import dev.chirana.umbrellaz.authorization.CommandAuthorization;
 import dev.chirana.umbrellaz.config.UmbrellazConfig;
@@ -15,6 +25,8 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -22,6 +34,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 
 public final class WhitelistCommand {
+    private static final Logger LOGGER = LoggerFactory.getLogger(WhitelistCommand.class);
     private static final String UNKNOWN_PLAYER_NAME = "Jogador sem nome";
     private static final DateTimeFormatter DETAILS_DATE_FORMAT = DateTimeFormatter
             .ofPattern("dd/MM/yyyy HH:mm 'UTC'")
@@ -32,19 +45,27 @@ public final class WhitelistCommand {
     private final AuthService authService;
     private final UmbrellazConfig config;
     private final OnlinePlayerSuggestions playerSuggestions;
+    private final AuditService auditService;
 
     public WhitelistCommand(WhitelistService whitelistService, AuthorizationService authorizationService, AuthService authService, UmbrellazConfig config) {
-        this(whitelistService, authorizationService, authService, config, new OnlinePlayerSuggestions());
+        this(whitelistService, authorizationService, authService, config, new OnlinePlayerSuggestions(), null);
     }
 
     public WhitelistCommand(WhitelistService whitelistService, AuthorizationService authorizationService,
                             AuthService authService, UmbrellazConfig config,
                             OnlinePlayerSuggestions playerSuggestions) {
+        this(whitelistService, authorizationService, authService, config, playerSuggestions, null);
+    }
+
+    public WhitelistCommand(WhitelistService whitelistService, AuthorizationService authorizationService,
+                            AuthService authService, UmbrellazConfig config,
+                            OnlinePlayerSuggestions playerSuggestions, AuditService auditService) {
         this.whitelistService = whitelistService;
         this.authorizationService = authorizationService;
         this.authService = authService;
         this.config = config;
         this.playerSuggestions = playerSuggestions;
+        this.auditService = auditService;
     }
 
     public void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -275,18 +296,24 @@ public final class WhitelistCommand {
     }
 
     private int add(CommandSourceStack source, String username) {
+        AuditRecordContext auditContext = auditContext(source);
         authorized(source).thenAccept(allowed -> source.getServer().execute(() -> {
             if (!allowed) {
-                deny(source);
+                deny(source, auditContext, "whitelist.add");
                 return;
             }
             whitelistService.addByUsername(username, source.getTextName()).thenAccept(result -> source.getServer().execute(() -> {
                 if (result.status() != PlayerResolution.Status.FOUND) {
+                    emit(auditContext, AuditActions.WHITELIST_UPDATED, Outcome.FAILURE,
+                            AuditPayload.forAction(AuditActions.WHITELIST_UPDATED,
+                                    AuditPayload.operation("add"), AuditPayload.result(resolutionCode(result.status()))));
                     resolutionFailure(source, username, result.status());
                     return;
                 }
                 UUID uuid = result.player().uuid();
                 authService.reconcileAuthorization(uuid).thenAccept(authenticated -> source.getServer().execute(() -> {
+                    emitWhitelist(auditContext, "add", uuid, result.player().username(),
+                            authenticated ? "authenticated" : "blocked");
                     if (authenticated) {
                         source.sendSuccess(() -> Component.empty()
                                 .append(successPrefix())
@@ -300,26 +327,42 @@ public final class WhitelistCommand {
                                 .append(playerName(username))
                                 .append(Component.literal(" continua bloqueado.").withStyle(ChatFormatting.YELLOW)));
                     }
-                })).exceptionally(throwable -> report(source, "Não foi possível autorizar o jogador"));
-            })).exceptionally(throwable -> report(source, "Não foi possível adicionar o jogador"));
-        })).exceptionally(throwable -> report(source, "Não foi possível autorizar o comando"));
+                })).exceptionally(throwable -> {
+                    emit(auditContext, AuditActions.WHITELIST_UPDATED, Outcome.FAILURE,
+                            AuditPayload.forAction(AuditActions.WHITELIST_UPDATED,
+                                    AuditPayload.operation("add"), AuditPayload.result("failed")));
+                    return report(source, "Não foi possível autorizar o jogador", throwable);
+                });
+            })).exceptionally(throwable -> {
+                emit(auditContext, AuditActions.WHITELIST_UPDATED, Outcome.FAILURE,
+                        AuditPayload.forAction(AuditActions.WHITELIST_UPDATED,
+                                AuditPayload.operation("add"), AuditPayload.result("failed")));
+                return report(source, "Não foi possível adicionar o jogador", throwable);
+            });
+        })).exceptionally(throwable -> report(source, "Não foi possível autorizar o comando", throwable));
         return 1;
     }
 
     private int remove(CommandSourceStack source, String username) {
+        AuditRecordContext auditContext = auditContext(source);
         authorized(source).thenAccept(allowed -> source.getServer().execute(() -> {
             if (!allowed) {
-                deny(source);
+                deny(source, auditContext, "whitelist.remove");
                 return;
             }
             whitelistService.findPlayerUuid(username).thenAccept(result -> source.getServer().execute(() -> {
                 if (result.status() != PlayerResolution.Status.FOUND) {
+                    emit(auditContext, AuditActions.WHITELIST_UPDATED, Outcome.FAILURE,
+                            AuditPayload.forAction(AuditActions.WHITELIST_UPDATED,
+                                    AuditPayload.operation("remove"), AuditPayload.result(resolutionCode(result.status()))));
                     resolutionFailure(source, username, result.status());
                     return;
                 }
                 UUID uuid = result.player().uuid();
                 whitelistService.remove(uuid).thenCompose(ignored -> authService.reconcileAuthorization(uuid))
                         .thenAccept(authenticated -> source.getServer().execute(() -> {
+                            emitWhitelist(auditContext, "remove", uuid, result.player().username(),
+                                    authenticated ? "authenticated" : "blocked");
                             if (!authenticated) {
                                 var player = source.getServer().getPlayerList().getPlayer(uuid);
                                 if (player != null) {
@@ -332,9 +375,19 @@ public final class WhitelistCommand {
                                     .append(playerName(username))
                                     .append(Component.literal(" foi removido da whitelist e está bloqueado.")
                                             .withStyle(ChatFormatting.GREEN)), true);
-                        })).exceptionally(throwable -> report(source, "Não foi possível remover o jogador"));
-            })).exceptionally(throwable -> report(source, "Não foi possível localizar o jogador"));
-        })).exceptionally(throwable -> report(source, "Não foi possível autorizar o comando"));
+                        })).exceptionally(throwable -> {
+                            emit(auditContext, AuditActions.WHITELIST_UPDATED, Outcome.FAILURE,
+                                    AuditPayload.forAction(AuditActions.WHITELIST_UPDATED,
+                                            AuditPayload.operation("remove"), AuditPayload.result("failed")));
+                            return report(source, "Não foi possível remover o jogador", throwable);
+                        });
+            })).exceptionally(throwable -> {
+                emit(auditContext, AuditActions.WHITELIST_UPDATED, Outcome.FAILURE,
+                        AuditPayload.forAction(AuditActions.WHITELIST_UPDATED,
+                                AuditPayload.operation("remove"), AuditPayload.result("failed")));
+                return report(source, "Não foi possível localizar o jogador", throwable);
+            });
+        })).exceptionally(throwable -> report(source, "Não foi possível autorizar o comando", throwable));
         return 1;
     }
 
@@ -369,7 +422,79 @@ public final class WhitelistCommand {
         source.sendFailure(error("Você não tem autorização Umbrellaz para gerenciar a whitelist."));
     }
 
+    private void deny(CommandSourceStack source, AuditRecordContext context, String permission) {
+        deny(source);
+        emit(context, AuditActions.AUTHORIZATION_COMMAND_DENIED, Outcome.DENIED,
+                AuditPayload.forAction(AuditActions.AUTHORIZATION_COMMAND_DENIED,
+                        AuditPayload.permission(permission), AuditPayload.reasonCode("not_administrator")),
+                AuditDelivery.BEST_EFFORT);
+    }
+
+    private AuditRecordContext auditContext(CommandSourceStack source) {
+        if (source.getEntity() instanceof ServerPlayer player) {
+            return AuditRecordContext.forActor(new Actor(ActorType.PLAYER, player.getUUID(),
+                    player.getName().getString()));
+        }
+        return AuditRecordContext.forActor(new Actor(ActorType.CONSOLE, null, null));
+    }
+
+    private AuditPayload whitelistPayload(String operation, UUID uuid, String username, String result) {
+        if (username == null || username.isBlank()) {
+            return AuditPayload.forAction(AuditActions.WHITELIST_UPDATED,
+                    AuditPayload.operation(operation), AuditPayload.playerUuid(uuid), AuditPayload.result(result));
+        }
+        return AuditPayload.forAction(AuditActions.WHITELIST_UPDATED,
+                AuditPayload.operation(operation), AuditPayload.playerUuid(uuid), AuditPayload.playerName(username),
+                AuditPayload.result(result));
+    }
+
+    private void emitWhitelist(AuditRecordContext context, String operation, UUID uuid, String username,
+                               String result) {
+        try {
+            emit(context, AuditActions.WHITELIST_UPDATED, Outcome.SUCCESS,
+                    whitelistPayload(operation, uuid, username, result));
+        } catch (RuntimeException failure) {
+            LOGGER.warn("Unable to create whitelist audit payload", failure);
+        }
+    }
+
+    private String resolutionCode(PlayerResolution.Status status) {
+        return switch (status) {
+            case AMBIGUOUS -> "ambiguous";
+            case NOT_READY -> "not_ready";
+            case NOT_FOUND -> "not_found";
+            case FOUND -> "success";
+        };
+    }
+
+    private void emit(AuditRecordContext context, String action, Outcome outcome, AuditPayload payload) {
+        emit(context, action, outcome, payload, AuditDelivery.BEST_EFFORT);
+    }
+
+    private void emit(AuditRecordContext context, String action, Outcome outcome, AuditPayload payload,
+                      AuditDelivery delivery) {
+        if (auditService == null) {
+            return;
+        }
+        try {
+            auditService.record(new AuditRecordRequest(context, Source.COMMAND, action, outcome, null, null, 1,
+                    payload, delivery)).exceptionally(failure -> {
+                LOGGER.warn("Unable to record whitelist command audit event", failure);
+                return null;
+            });
+        } catch (RuntimeException failure) {
+            LOGGER.warn("Unable to create whitelist command audit event", failure);
+        }
+    }
+
     private Void report(CommandSourceStack source, String message) {
+        return report(source, message, null);
+    }
+
+    private Void report(CommandSourceStack source, String message, Throwable failure) {
+        if (failure != null) {
+            LOGGER.warn("Whitelist command operation failed", failure);
+        }
         source.getServer().execute(() -> source.sendFailure(error(message + ".")));
         return null;
     }

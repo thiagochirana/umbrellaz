@@ -280,6 +280,81 @@ authenticatedAt
 
 The exact model may remain minimal initially.
 
+# Audit
+
+The `audit` module records append-only, bounded security and consequential
+application events. Feature services own the semantic decision to emit an
+event; `AuditRepository` owns JDBC persistence through the existing SQLite
+database. `AuditService` creates trusted event identity and timestamps, while a
+bounded `AuditWriter` admits REQUIRED events ahead of BEST_EFFORT events and
+flushes one batch of at most 100 per `DatabaseExecutor` task before
+cooperatively resubmitting at the executor tail. Its flush operation captures
+an admission watermark, so work accepted after a flush begins cannot postpone
+that flush. JDBC never runs on Minecraft hot paths.
+
+UUIDs are the persistent identity for actors and event correlation; display
+names are only bounded snapshots. Actions, outcomes, sources, and target types
+use stable codes centralized in `AuditActions`. Non-empty payloads are
+constructed only through an
+action-specific typed schema; fields are typed codes, UUIDs, integers, booleans,
+semantic identifiers, coordinates, or bounded player-name snapshots. Payloads
+are versioned and limited to 8 KiB. Future retention work deletes old rows in
+bounded chunks. The module deliberately does not store passwords, credentials,
+tokens, nonces, salts, hashes, exceptions, stack traces, IP addresses, chat,
+or raw command lines. Rows written by the initial schema may contain an opaque
+legacy payload; repository reads preserve that bounded JSON without treating it
+as a trusted payload or making it available as a new emitter construction path.
+There is no public arbitrary map or JSON payload constructor.
+
+Audit queries are bounded to 50 rows, use newest-first sequence cursors, and
+support action, actor UUID, and occurred-since filters. The administrative
+query surface is asynchronous and returns fixed failure messages without raw
+payload disclosure. Retention uses a fixed 90-day cutoff and deletes in
+bounded 1,000-row chunks, never running `VACUUM` live. Runtime shutdown stops
+new audit admission, drains accepted work, then closes the database executor;
+REQUIRED work is rejected when unhealthy or full, while BEST_EFFORT overflow is
+dropped with counters and rate-limited diagnostics.
+
+For persistent business mutations, `AuditService.recordInTransaction` creates
+the trusted event identity and appends a REQUIRED event to a caller-owned JDBC
+transaction without committing or rolling it back. The feature service must
+run this operation on `DatabaseExecutor` and own the business transaction's
+commit or rollback; feature services must not construct audit identities or
+bypass the service boundary.
+
+Arbitrary command executions converge at the common Minecraft 26.3
+`Commands.performCommand(ParseResults, String)` return hook. The hook reads
+only literal node names from the parsed Brigadier context, bounds the path to
+four names and 128 UTF-16 characters, and records the trusted source as a
+player, console, or system actor. It never stores the raw command, arguments,
+argument values, or source text. In this mappings lane `performCommand` returns
+`void`, so `command.executed` uses the explicit `completed` dispatch outcome and
+`result_unavailable` reason; that outcome does not claim semantic command
+success. The hook resolves the ready server runtime at invocation time and
+emits asynchronously as BEST_EFFORT, isolating audit failure from command
+behavior.
+
+The bounded interaction expansion uses return hooks for `ItemStack.use` and
+`useOn`, and for the common 26.3 `Entity.interact(Player, InteractionHand,
+Vec3)` mapping (the hit vector is the mapped equivalent of an `interactAt`
+hook). It records only consuming results. `AbstractContainerMenu.clicked`
+records a mutation only when its state ID or bounded carried/clicked-slot
+fingerprint changes; it never serializes components, NBT, or an inventory
+dump. These hooks resolve the runtime from the current server level and emit
+BEST_EFFORT events without waiting. Custom code can invoke the same vanilla
+  method recursively or as a simulation, so a universal duplicate-proof marker
+  is not available; normal container returns are paired with a thread-local
+  snapshot and exceptional unwinds are discarded without an audit.
+
+Damage auditing uses a per-server, server-thread-only bounded aggregator. It
+stores only UUIDs, registry identifiers, numeric damage totals, and counters;
+the Fabric `AFTER_DAMAGE` adapter filters shield/no-effect and non-player-only
+observations before admission. Fixed-window `damage.summary` events are
+BEST_EFFORT and are flushed before the runtime's audit writer shutdown. A
+separate confirmed `AFTER_PLAYER_CHANGE_LEVEL` adapter records
+`player.world.changed` with source/destination dimensions and the destination
+position, without inventing a teleport cause or initiator.
+
 ---
 
 # Authorization vs Authentication

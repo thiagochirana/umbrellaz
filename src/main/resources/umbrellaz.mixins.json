@@ -7,12 +7,17 @@
     "ItemEntityMixin",
     "ServerCommandSourceMixin",
     "CommandSourceStackAccessor",
-    "LivingEntityMixin",
+    "CommandsMixin",
+    "FoodDataMixin",
     "BlockItemMixin",
     "ServerExplosionMixin",
     "PistonStructureResolverMixin",
     "FireBlockMixin",
-    "FlowingFluidMixin"
+    "FlowingFluidMixin",
+    "ItemStackMixin",
+    "EntityMixin",
+    "AbstractContainerMenuMixin",
+    "LivingEntityMixin"
   ],
   "injectors": {
     "defaultRequire": 1

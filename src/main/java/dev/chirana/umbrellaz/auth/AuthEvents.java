@@ -56,6 +56,13 @@ public final class AuthEvents {
                 .orElse(true);
     }
 
+    public static boolean isAuthenticated(ServerPlayer player) {
+        if (player == null || !(player.level() instanceof ServerLevel level)) return false;
+        return ServerRuntimeRegistry.findReady(level.getServer())
+                .map(runtime -> runtime.isAuthenticated(player))
+                .orElse(false);
+    }
+
     public static boolean isBlocked(Player player) {
         return player instanceof ServerPlayer serverPlayer && isBlocked(serverPlayer);
     }

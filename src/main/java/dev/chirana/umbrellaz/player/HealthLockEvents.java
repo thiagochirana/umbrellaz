@@ -4,8 +4,6 @@ import dev.chirana.umbrellaz.runtime.ServerRuntimeRegistry;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 
-import java.util.UUID;
-
 public final class HealthLockEvents {
     private HealthLockEvents() {
     }
@@ -24,11 +22,4 @@ public final class HealthLockEvents {
                 .orElse(0.0f);
     }
 
-    public static boolean isLocked(UUID playerUuid) {
-        return false;
-    }
-
-    public static float lockedHealth(UUID playerUuid) {
-        return 0.0f;
-    }
 }
