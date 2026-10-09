@@ -44,8 +44,4 @@ public abstract class ServerExplosionMixin {
         }
     }
 
-    @Inject(method = "interactWithBlocks", at = @At("THROW"))
-    private void umbrellaz$clearExplosionAuditState(List<BlockPos> positions, CallbackInfo callbackInfo) {
-        umbrellaz$explosionAuditCandidates = null;
-    }
 }

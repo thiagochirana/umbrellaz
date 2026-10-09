@@ -1,7 +1,7 @@
-[20:20:27] [umbrellaz-db/ERROR]: Audit writer became unhealthy after an audit persistence failure
-[20:20:27] [Test worker/WARN]: Audit best-effort events are being dropped because the bounded writer queue is full
-[20:20:27] [Test worker/WARN]: Damage audit bucket capacity reached; dropping summaries (drops=1)
-[20:20:27] [umbrellaz-db/ERROR]: Authorization lookup failed for e76fc65c-24b7-4a2b-bd9d-29f1df4c3af3
+[23:45:34] [umbrellaz-db/ERROR]: Audit writer became unhealthy after an audit persistence failure
+[23:45:34] [Test worker/WARN]: Audit best-effort events are being dropped because the bounded writer queue is full
+[23:45:34] [Test worker/WARN]: Damage audit bucket capacity reached; dropping summaries (drops=1)
+[23:45:34] [umbrellaz-db/ERROR]: Authorization lookup failed for b8bf9b65-f528-4b53-ac49-215219312de9
 java.util.concurrent.CompletionException: java.lang.IllegalStateException: SQLite operation failed
 	at java.base/java.util.concurrent.CompletableFuture.wrapInCompletionException(CompletableFuture.java:323)
 	at java.base/java.util.concurrent.CompletableFuture.encodeThrowable(CompletableFuture.java:376)
@@ -20,7 +20,7 @@ Caused by: java.lang.IllegalStateException: SQLite operation failed
 	at dev.chirana.umbrellaz.infra.db.DatabaseExecutor.lambda$submit$0(DatabaseExecutor.java:45)
 	at dev.chirana.umbrellaz.infra.db.DatabaseExecutor$SubmittedTask.run(DatabaseExecutor.java:86)
 	... 3 more
-Caused by: java.nio.file.FileAlreadyExistsException: /tmp/junit-653894785988365386/not-a-directory
+Caused by: java.nio.file.FileAlreadyExistsException: /tmp/junit-10256406128908528757/not-a-directory
 	at java.base/sun.nio.fs.UnixException.translateToIOException(UnixException.java:94)
 	at java.base/sun.nio.fs.UnixException.rethrowAsIOException(UnixException.java:106)
 	at java.base/sun.nio.fs.UnixException.rethrowAsIOException(UnixException.java:111)
@@ -30,5 +30,5 @@ Caused by: java.nio.file.FileAlreadyExistsException: /tmp/junit-6538947859883653
 	at java.base/java.nio.file.Files.createDirectories(Files.java:689)
 	at dev.chirana.umbrellaz.infra.db.sqlite.SQLiteDatabase.withConnection(SQLiteDatabase.java:20)
 	... 7 more
-[20:20:27] [umbrellaz-db/WARN]: Authorization audit failed for dee79b35-05c4-4412-8ebb-3fe70b29430c
-[20:20:27] [umbrellaz-db/WARN]: Authorization audit failed for dee79b35-05c4-4412-8ebb-3fe70b29430c
+[23:45:34] [umbrellaz-db/WARN]: Authorization audit failed for 42cbafa3-ca2b-4049-9019-9d2fe2f9d64d
+[23:45:34] [umbrellaz-db/WARN]: Authorization audit failed for 42cbafa3-ca2b-4049-9019-9d2fe2f9d64d
